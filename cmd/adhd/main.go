@@ -135,20 +135,19 @@ func main() {
 func version() string {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
-		return "adhd (dev)"
+		return "adhd dev"
 	}
 
-	var version string
-	for _, s := range bi.Settings {
-		if s.Key == "vcs.revision" {
-			version = s.Value[:8]
-			break
+	v := bi.Main.Version
+	if v == "" || v == "(devel)" {
+		// Fall back to commit hash when running outside a module release
+		for _, s := range bi.Settings {
+			if s.Key == "vcs.revision" && len(s.Value) >= 8 {
+				return "adhd " + s.Value[:8]
+			}
 		}
+		return "adhd dev"
 	}
 
-	if version == "" {
-		version = "dev"
-	}
-
-	return fmt.Sprintf("adhd (version %s)", version)
+	return "adhd " + v
 }
