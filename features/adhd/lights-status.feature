@@ -55,3 +55,31 @@ Feature: ADHD Lights Status Indicators
     When the status is changed to "dark"
     And I render the light
     Then the indicator shows ⚫
+
+  # ── startup flicker guard ─────────────────────────────────────────────────
+  # Feature lights must not go red during startup before the cluster has had
+  # a chance to reach a known-good baseline. Early probe failures are transient,
+  # not evidence of a feature being broken.
+
+  Scenario: feature lights stay dark until the cluster has been fully green at least once
+    Given ADHD starts and smoke-alarm endpoints are reachable but not yet ready
+    When the first poll returns red for one or more targets
+    Then feature lights remain "dark"
+    And clusterEverHealthy is false
+
+  Scenario: feature lights start tracking health after the first all-green probe
+    Given clusterEverHealthy is false
+    When all smoke: target lights report "green" for the first time
+    Then clusterEverHealthy is set to true
+    And feature lights are set to "green"
+
+  Scenario: feature lights turn red after baseline when cluster degrades
+    Given clusterEverHealthy is true
+    When a smoke: target light transitions to "red"
+    Then feature lights without a domain-specific verifier are set to "red"
+
+  Scenario: feature lights with domain-specific verifiers are not affected by the flicker guard
+    Given domain "discovery" has been certified via CapabilityVerifiedMsg
+    And clusterEverHealthy is false
+    When any smoke: target goes red
+    Then @domain-discovery feature lights are unchanged by the flicker guard

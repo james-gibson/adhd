@@ -74,3 +74,24 @@ Feature: ADHD Smoke-Alarm Network Integration
     And SSE sends a conflicting status
     Then ADHD applies the latest status (SSE is preferred over polling)
     And no duplicate updates are processed for the same target
+
+  # ── structural evidence certification ─────────────────────────────────────
+  # Certain target IDs carry semantic meaning about smoke-alarm capabilities.
+  # Presence of these targets certifies the domain regardless of health status.
+
+  Scenario: a "self-health-check" target certifies @domain-smoke-alarm-network
+    Given a smoke-alarm /status response contains a target with ID "self-health-check"
+    When ADHD processes the LightUpdate for that target
+    Then the @domain-smoke-alarm-network feature lights are set to "green"
+    And the certification fires even if the "self-health-check" target is red or yellow
+
+  Scenario: aggregate smoke network status is computed from all smoke: target lights
+    Given ADHD has smoke: lights: smoke:alarm-a/peer=red, smoke:alarm-a/self-health-check=green
+    When aggregateSmokeNetworkStatus is computed
+    Then the result is "red" (worst-case across all non-dark smoke: lights)
+
+  Scenario: aggregate smoke network status is dark when no target lights exist yet
+    Given no smoke: target lights have been created
+    When aggregateSmokeNetworkStatus is computed
+    Then the result is "dark"
+    And no CapabilityVerifiedMsg is emitted for smoke-alarm-network

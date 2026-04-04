@@ -87,3 +87,28 @@ Feature: ADHD Demo Mode Cluster Discovery
     When lezz demo receives SIGINT
     Then ~/.lezz/demo-adhd.yaml is deleted
     And subsequent "adhd --demo" invocations will not see the old cluster
+
+  # ── 42i demo capability certification ────────────────────────────────────
+  # @domain-demo feature lights are certified green via two mechanisms:
+  #
+  # 1. MarkPreVerified() — when adhd --demo discovers the cluster at startup,
+  #    main.go queues a CapabilityVerifiedMsg before Run() so the lights go
+  #    green at Init() time without waiting for a smoke-alarm poll.
+  #
+  # 2. certifyFromSmokeTarget() — any smoke: light whose source name contains
+  #    "demo" (e.g. "demo-65552/alarm-b") triggers demo certification. This
+  #    catches the case where the config was loaded from a stable config file
+  #    rather than via --demo, but the endpoints still have "demo-" names.
+
+  Scenario: adhd --demo pre-certifies @domain-demo before any smoke-alarm poll
+    Given adhd discovers a lezz demo cluster via Browse()
+    When the BubbleTeaDashboard is created and Run() is called
+    Then a CapabilityVerifiedMsg with domain="demo" and status="green" is emitted at Init()
+    And @domain-demo feature lights are green before the first smoke-alarm poll completes
+
+  Scenario: structural evidence from a "demo-*" endpoint name certifies @domain-demo
+    Given adhd is configured with a smoke-alarm endpoint named "demo-65552/alarm-a"
+    And adhd was NOT started with --demo (e.g. loaded a stable config file)
+    When any LightUpdate arrives from the "demo-65552/alarm-a" endpoint
+    Then a CapabilityVerifiedMsg is applied with domain="demo" and status="green"
+    And @domain-demo feature lights are set to "green"

@@ -117,3 +117,33 @@ Feature: ADHD Headless Mode
     Then adhd builds a config from alarm_a and alarm_b URLs only
     And adhd_mcp URL is not used by the TUI adhd
     And the TUI instance operates independently of the headless instance
+
+  # ── TUI certification of headless via isotope probe ───────────────────────
+  # The TUI dashboard probes the smoke-alarm's /isotope endpoint to observe
+  # whether headless adhd has registered. A non-empty response is structural
+  # evidence that the headless capability is implemented and running.
+  # This is the 42i inter-peer certification step: one peer leaves evidence
+  # (isotope registration) that the other peer observes (isotope probe).
+
+  Scenario: TUI adhd probes smoke-alarm /isotope endpoint to certify headless capability
+    Given TUI adhd is configured with at least one smoke-alarm endpoint
+    And headless adhd has registered as an isotope with that smoke-alarm
+    When the BubbleTeaDashboard initialises and 6 seconds elapse
+    Then adhd sends GET /isotope to the first configured smoke-alarm endpoint
+    And the response contains at least one registered isotope
+    Then a CapabilityVerifiedMsg is applied with domain="headless" and status="green"
+    And the @domain-headless feature lights are set to "green"
+
+  Scenario: headless domain stays dark when no isotopes are registered
+    Given TUI adhd is configured with a smoke-alarm endpoint
+    And no isotopes are registered with that smoke-alarm
+    When the isotope probe runs
+    Then no CapabilityVerifiedMsg is emitted for domain "headless"
+    And @domain-headless feature lights remain "dark"
+
+  Scenario: headless isotope probe does not fail when smoke-alarm is unreachable
+    Given the configured smoke-alarm endpoint is unreachable
+    When the isotope probe runs
+    Then no error is raised
+    And @domain-headless feature lights remain "dark"
+    And ADHD continues running normally
