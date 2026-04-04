@@ -146,7 +146,7 @@ func AutoDiscoverPrime(ctx context.Context, smokeAlarmURL string) (string, error
 // RegisterIsotopeWithRole registers this instance via smoke-alarm's REST /isotope/register
 // endpoint and returns the assigned trust rung (0 if registration fails).
 func RegisterIsotopeWithRole(ctx context.Context, smokeAlarmURL string, role IsotopeRole, localAddr string) (int, error) {
-	record, err := isotope.NewClient(smokeAlarmURL).Register(ctx, isotope.IsotopeRegistration{
+	record, err := isotope.NewClient(smokeAlarmURL).Register(ctx, isotope.Registration{
 		Name:     "adhd",
 		Role:     string(role),
 		Endpoint: localAddr,
