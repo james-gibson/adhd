@@ -102,7 +102,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		MCPServer: MCPServerConfig{
 			Enabled: false,
-			Addr:    ":9090",
+			Addr:    ":0", // OS assigns a free port; avoids conflicts in multi-daemon clusters
 		},
 		SmokeAlarm: []SmokeAlarmEndpoint{},
 		MCPTargets: []MCPTarget{},

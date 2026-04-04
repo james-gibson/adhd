@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"sync"
@@ -110,12 +111,21 @@ func (w *Watcher) watchEndpoint(ctx context.Context, endpoint config.SmokeAlarmE
 
 // watchViaPolling periodically queries /status
 func (w *Watcher) watchViaPolling(ctx context.Context, endpoint config.SmokeAlarmEndpoint, updates chan<- LightUpdate) {
+	// Jitter: spread initial polls uniformly across the interval so a cluster
+	// of watchers starting together doesn't fire in a synchronized burst.
+	jitter := time.Duration(rand.Int64N(int64(endpoint.Interval)))
+	slog.Debug("starting smoke-alarm polling", "endpoint", endpoint.Name, "interval", endpoint.Interval, "jitter", jitter)
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(jitter):
+	}
+
 	ticker := time.NewTicker(endpoint.Interval)
 	defer ticker.Stop()
 
-	slog.Debug("starting smoke-alarm polling", "endpoint", endpoint.Name, "interval", endpoint.Interval)
-
-	// Poll immediately so the boot sequence gets real state without waiting a full interval.
+	// Poll immediately after jitter so the boot sequence gets real state
+	// without waiting a full interval.
 	w.pollOnce(ctx, endpoint, updates)
 
 	for {
