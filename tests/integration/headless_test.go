@@ -249,29 +249,24 @@ func TestHeadlessMultipleInstances(t *testing.T) {
 
 // TestHeadlessIsotopeRegistration verifies isotope registration flow
 func TestHeadlessIsotopeRegistration(t *testing.T) {
-	// Mock smoke-alarm that accepts isotope registration
+	// Mock smoke-alarm that accepts isotope registration via REST
 	registered := false
 	smokeAlarm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var rpcReq map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&rpcReq); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
+		if r.URL.Path == "/isotope/register" && r.Method == http.MethodPost {
+			registered = true
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"name":          "adhd",
+				"role":          "prime",
+				"endpoint":      ":0",
+				"protocol":      "mcp",
+				"trust_rung":    2,
+				"rung_name":     "Harness Tools",
+				"registered_at": time.Now().UTC(),
+			})
 			return
 		}
-
-		method, ok := rpcReq["method"].(string)
-		if ok && method == "smoke-alarm.isotope.register" {
-			registered = true
-		}
-
-		response := map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"result": map[string]interface{}{
-				"success": true,
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer smokeAlarm.Close()
 
