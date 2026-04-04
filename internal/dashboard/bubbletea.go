@@ -274,22 +274,38 @@ func (m *BubbleTeaDashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case smokelink.LightUpdate:
 		if msg.IsInstance {
-			// Instance-level update (reachable/unreachable) — update the mDNS
-			// light directly. Only mDNS lights are managed this way; static
-			// endpoint lights are handled by the legacy model.
+			// Instance-level update — update the mDNS light if present.
 			if l := m.lights.GetByName(msg.SourceName); l != nil && l.Source == "mdns" {
 				l.SetStatus(msg.Status)
 				l.SetDetails(msg.Details)
 			}
 		} else {
-			// Target-level update — any successful response from a smoke alarm
-			// confirms it is armed. Transition the instance light from dark.
+			// Target-level update from a statically-configured smoke-alarm endpoint.
+			// Create or update the smoke:source/target light, then propagate the
+			// aggregate cluster health to all feature lights.
+			lightName := "smoke:" + msg.SourceName + "/" + msg.TargetID
+			if l := m.lights.GetByName(lightName); l != nil {
+				l.SetStatus(msg.Status)
+				l.SetDetails(msg.Details)
+			} else {
+				l = lights.New(lightName, "smoke-alarm")
+				l.Source = "smoke-alarm"
+				l.SetStatus(msg.Status)
+				l.SetDetails(msg.Details)
+				l.SourceMeta = map[string]string{
+					"instance": msg.SourceName,
+					"targetID": msg.TargetID,
+				}
+				m.lights.Add(l)
+			}
+			// Also arm mDNS lights for this source (backward-compat).
 			if l := m.lights.GetByName(msg.SourceName); l != nil && l.Source == "mdns" {
 				if l.GetStatus() == lights.StatusDark {
 					l.SetStatus(lights.StatusGreen)
 					l.SetDetails("armed")
 				}
 			}
+			m.applyClusterHealthToFeatures()
 		}
 		if m.lightUpdates != nil {
 			return m, waitForLightUpdate(m.lightUpdates)
@@ -346,6 +362,47 @@ func (m *BubbleTeaDashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// applyClusterHealthToFeatures computes the worst-case status across all
+// smoke-alarm lights and applies it to every feature light. Feature lights
+// reflect what the system is supposed to do; cluster health reflects whether
+// it is actually doing it. When the cluster is fully healthy all feature lights
+// go green. When any target is degraded or down they follow.
+//
+// Only lights with Source "smoke-alarm" or "mdns" are considered for the
+// aggregate. If no such lights exist or all are still dark (nothing probed yet)
+// the feature lights are left unchanged so they don't flicker at startup.
+func (m *BubbleTeaDashboard) applyClusterHealthToFeatures() {
+	worst := lights.StatusGreen
+	hasData := false
+	for _, l := range m.lights.All() {
+		if l.Source != "smoke-alarm" && l.Source != "mdns" {
+			continue
+		}
+		s := l.GetStatus()
+		if s == lights.StatusDark {
+			continue // not yet probed — ignore
+		}
+		hasData = true
+		switch s {
+		case lights.StatusRed:
+			worst = lights.StatusRed
+		case lights.StatusYellow:
+			if worst != lights.StatusRed {
+				worst = lights.StatusYellow
+			}
+		}
+	}
+	if !hasData {
+		return
+	}
+	for _, l := range m.lights.All() {
+		if l.Type != "feature" {
+			continue
+		}
+		l.SetStatus(worst)
+	}
 }
 
 // View renders the dashboard
