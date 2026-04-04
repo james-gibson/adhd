@@ -2,10 +2,26 @@ package dashboard
 
 import (
 	"github.com/james-gibson/adhd/internal/discovery"
+	"github.com/james-gibson/adhd/internal/lights"
 	"github.com/james-gibson/adhd/internal/smokelink"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// CapabilityVerifiedMsg is delivered when a runtime capability has been
+// exercised and its outcome is known. It drives feature lights for the
+// matching @domain-* tag, providing live 42i certification evidence
+// between peers.
+//
+// Domain is the suffix of the @domain-<Domain> Gherkin tag on the feature
+// file (e.g. "discovery", "smoke-alarm-network", "demo", "headless").
+// Status green means the capability is verified working at this instant;
+// red means the capability failed; dark means it has not yet been observed.
+type CapabilityVerifiedMsg struct {
+	Domain  string
+	Status  lights.Status
+	Details string
+}
 
 // SmokeAlarmDiscoveredMsg is delivered into the Bubble Tea update cycle when
 // the mDNS browser finds a new smoke-alarm instance. model.Update is the only

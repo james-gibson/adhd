@@ -2,8 +2,10 @@ package dashboard
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -44,6 +46,15 @@ type BubbleTeaDashboard struct {
 	// this baseline is established, preventing startup flicker when adhd
 	// connects before the cluster is ready.
 	clusterEverHealthy bool
+	// preVerified holds CapabilityVerifiedMsgs to be emitted during Init().
+	// Callers set these before Run() when a domain is already known-good
+	// at construction time (e.g. demo cluster was just discovered).
+	preVerified []CapabilityVerifiedMsg
+	// verifiedDomains tracks which feature domains are managed by
+	// CapabilityVerifiedMsg events. applyClusterHealthToFeatures skips
+	// these so the specific capability signal is not overwritten by the
+	// aggregate health fallback.
+	verifiedDomains map[string]bool
 }
 
 // NewBubbleTeaDashboardWithBrowser creates a BubbleTeaDashboard using the
@@ -74,10 +85,10 @@ func NewBubbleTeaDashboard(cfg *config.Config) *BubbleTeaDashboard {
 			light.Source = bin.Name
 			light.Status = lights.StatusDark // Updated by health monitor after probing
 			light.SourceMeta = map[string]string{
-				"binary":           bin.Name,
-				"endpoint":         bin.Endpoint,
-				"gherkin_file":     feature.GherkinFile,
-				"gherkin_feature":  feature.GherkinFeature,
+				"binary":          bin.Name,
+				"endpoint":        bin.Endpoint,
+				"gherkin_file":    feature.GherkinFile,
+				"gherkin_feature": feature.GherkinFeature,
 			}
 			c.Add(light)
 		}
@@ -100,6 +111,7 @@ func NewBubbleTeaDashboard(cfg *config.Config) *BubbleTeaDashboard {
 				"endpoint":        bin.Endpoint,
 				"gherkin_file":    gfeature.FilePath,
 				"gherkin_feature": gfeature.Name,
+				"domain":          gfeature.Domain,
 			}
 			c.Add(light)
 		}
@@ -117,8 +129,11 @@ func NewBubbleTeaDashboard(cfg *config.Config) *BubbleTeaDashboard {
 		for _, feature := range discoveredFeatures {
 			light := lights.New(feature.Name, "feature")
 			light.Source = "gherkin"
-			light.SourceMeta = map[string]string{"file": feature.FilePath}
-			light.Status = lights.StatusGreen
+			light.SourceMeta = map[string]string{
+				"file":   feature.FilePath,
+				"domain": feature.Domain,
+			}
+			light.Status = lights.StatusDark
 			c.Add(light)
 		}
 	}
@@ -203,6 +218,42 @@ func (m *BubbleTeaDashboard) Init() tea.Cmd {
 			cmds = append(cmds, waitForDiscovery(ch))
 		}
 	}
+
+	// Emit pre-verified domains queued by the caller before Run()
+	// (e.g. demo cluster already discovered in main.go).
+	for _, msg := range m.preVerified {
+		msg := msg
+		cmds = append(cmds, func() tea.Msg { return msg })
+	}
+	m.preVerified = nil
+
+	// Trivially verified domains: if the TUI is running, the dashboard and
+	// lights subsystems are implemented. Emit green immediately.
+	cmds = append(cmds, func() tea.Msg {
+		return CapabilityVerifiedMsg{Domain: "dashboard", Status: lights.StatusGreen, Details: "TUI running"}
+	})
+	if m.lights.Count() > 0 {
+		count := m.lights.Count()
+		cmds = append(cmds, func() tea.Msg {
+			return CapabilityVerifiedMsg{
+				Domain:  "lights",
+				Status:  lights.StatusGreen,
+				Details: fmt.Sprintf("%d lights configured", count),
+			}
+		})
+	}
+	if m.mcpServer != nil {
+		cmds = append(cmds, func() tea.Msg {
+			return CapabilityVerifiedMsg{Domain: "mcp-server", Status: lights.StatusGreen, Details: "MCP server started"}
+		})
+	}
+
+	// Probe smoke-alarm /isotope list to detect headless adhd registration.
+	// This is the inter-peer 42i certification step.
+	if probe := m.probeIsotopeRegistration(); probe != nil {
+		cmds = append(cmds, probe)
+	}
+
 	return tea.Batch(cmds...)
 }
 
@@ -311,6 +362,15 @@ func (m *BubbleTeaDashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.applyClusterHealthToFeatures()
+
+			// Certify @domain-smoke-alarm-network feature lights with the current
+			// aggregate status of all smoke: target lights. This provides specific
+			// 42i evidence that the smoke-alarm integration is working (or failing).
+			// Call directly since we are already inside Update().
+			if networkStatus := m.aggregateSmokeNetworkStatus(); networkStatus != lights.StatusDark {
+				m.applyCapabilityToFeatures("smoke-alarm-network", networkStatus,
+					fmt.Sprintf("smoke-alarm network: %s", networkStatus))
+			}
 		}
 		if m.lightUpdates != nil {
 			return m, waitForLightUpdate(m.lightUpdates)
@@ -348,10 +408,20 @@ func (m *BubbleTeaDashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				slog.Info("mdns: health-check started", "hostname", msg.Hostname, "endpoint", endpoint.Endpoint)
 			}
 		}
+		// mDNS discovery succeeded: certify the @domain-discovery feature lights.
+		// Call directly since we are already inside Update().
+		m.applyCapabilityToFeatures("discovery", lights.StatusGreen,
+			fmt.Sprintf("mDNS peer discovered: %s", msg.Hostname))
 		if m.instances != nil {
 			return m, waitForDiscovery(m.instances)
 		}
 		return m, nil
+
+	case CapabilityVerifiedMsg:
+		// A runtime capability was exercised. Drive the matching domain's
+		// feature lights to reflect the observed outcome.
+		m.applyCapabilityToFeatures(msg.Domain, msg.Status, msg.Details)
+		slog.Debug("capability verified", "domain", msg.Domain, "status", msg.Status, "details", msg.Details)
 
 	case SmokeAlarmRemovedMsg:
 		lightName := "smoke-alarm:" + msg.Hostname
@@ -367,6 +437,103 @@ func (m *BubbleTeaDashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// MarkPreVerified queues a CapabilityVerifiedMsg to be emitted at Init()
+// time. Call after NewBubbleTeaDashboard but before Run() when the caller
+// already knows a domain is verified (e.g. demo cluster was just found).
+func (m *BubbleTeaDashboard) MarkPreVerified(msg CapabilityVerifiedMsg) {
+	m.preVerified = append(m.preVerified, msg)
+}
+
+// applyCapabilityToFeatures marks all feature lights whose SourceMeta["domain"]
+// matches domain with the given status. It also registers the domain as
+// actively managed so applyClusterHealthToFeatures does not override it.
+func (m *BubbleTeaDashboard) applyCapabilityToFeatures(domain string, status lights.Status, details string) {
+	if m.verifiedDomains == nil {
+		m.verifiedDomains = make(map[string]bool)
+	}
+	m.verifiedDomains[domain] = true
+	for _, l := range m.lights.All() {
+		if l.Type != "feature" {
+			continue
+		}
+		if d, ok := l.SourceMeta["domain"]; !ok || d != domain {
+			continue
+		}
+		l.SetStatus(status)
+		if details != "" {
+			l.SetDetails(details)
+		}
+	}
+}
+
+// aggregateSmokeNetworkStatus computes the worst-case status across all
+// target-level smoke: lights (excludes mDNS instance lights).
+// Returns dark when no target lights exist yet.
+func (m *BubbleTeaDashboard) aggregateSmokeNetworkStatus() lights.Status {
+	worst := lights.StatusGreen
+	hasData := false
+	for _, l := range m.lights.All() {
+		if !strings.HasPrefix(l.Name, "smoke:") {
+			continue
+		}
+		s := l.GetStatus()
+		if s == lights.StatusDark {
+			continue
+		}
+		hasData = true
+		switch s {
+		case lights.StatusRed:
+			worst = lights.StatusRed
+		case lights.StatusYellow:
+			if worst != lights.StatusRed {
+				worst = lights.StatusYellow
+			}
+		}
+	}
+	if !hasData {
+		return lights.StatusDark
+	}
+	return worst
+}
+
+// probeIsotopeRegistration returns a Cmd that queries the first configured
+// smoke-alarm endpoint's /isotope list after a brief startup delay. If any
+// isotopes are registered (headless adhd registered with the smoke-alarm),
+// it emits CapabilityVerifiedMsg{Domain: "headless", Status: green}.
+// This is the 42i inter-peer certification step: TUI adhd observes evidence
+// that headless adhd has announced itself to the shared smoke-alarm.
+func (m *BubbleTeaDashboard) probeIsotopeRegistration() tea.Cmd {
+	if len(m.config.SmokeAlarm) == 0 {
+		return nil
+	}
+	endpoint := strings.TrimSuffix(m.config.SmokeAlarm[0].Endpoint, "/") + "/isotope"
+	return func() tea.Msg {
+		// Allow headless adhd time to start and register before probing.
+		time.Sleep(6 * time.Second)
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Get(endpoint) //nolint:noctx
+		if err != nil {
+			return nil // headless not running — stay dark, not failed
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			return nil
+		}
+		var isotopes []json.RawMessage
+		if err := json.NewDecoder(resp.Body).Decode(&isotopes); err != nil {
+			return nil
+		}
+		if len(isotopes) == 0 {
+			return nil
+		}
+		return CapabilityVerifiedMsg{
+			Domain:  "headless",
+			Status:  lights.StatusGreen,
+			Details: fmt.Sprintf("%d isotope(s) registered with smoke-alarm", len(isotopes)),
+		}
+	}
 }
 
 // applyClusterHealthToFeatures computes the worst-case status across all
@@ -416,6 +583,11 @@ func (m *BubbleTeaDashboard) applyClusterHealthToFeatures() {
 	}
 	for _, l := range m.lights.All() {
 		if l.Type != "feature" {
+			continue
+		}
+		// Skip lights whose domain is actively managed by a CapabilityVerifiedMsg
+		// verifier — those carry more specific evidence than aggregate health.
+		if d, ok := l.SourceMeta["domain"]; ok && d != "" && m.verifiedDomains[d] {
 			continue
 		}
 		l.SetStatus(worst)

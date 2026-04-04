@@ -64,9 +64,11 @@ func main() {
 
 	// Load configuration — either from file or by discovering a lezz demo cluster.
 	var cfg *config.Config
+	var clusters []demo.ClusterInfo
 	if *demoFlag {
 		fmt.Fprintf(os.Stderr, "browsing for lezz demo cluster (timeout %s)...\n", demo.DefaultTimeout)
-		clusters, discoverErr := demo.Browse(ctx, demo.DefaultTimeout)
+		var discoverErr error
+		clusters, discoverErr = demo.Browse(ctx, demo.DefaultTimeout)
 		if discoverErr != nil {
 			fmt.Fprintln(os.Stderr, "demo discovery failed:", discoverErr)
 			os.Exit(1)
@@ -141,6 +143,17 @@ func main() {
 	} else {
 		// TUI mode: Bubble Tea dashboard
 		d := dashboard.NewBubbleTeaDashboard(cfg)
+
+		// If the config was built from a lezz demo cluster discovery, mark the
+		// @domain-demo feature lights pre-verified so they go green at Init time.
+		if *demoFlag && len(clusters) > 0 {
+			d.MarkPreVerified(dashboard.CapabilityVerifiedMsg{
+				Domain:  "demo",
+				Status:  "green",
+				Details: fmt.Sprintf("%d cluster(s) discovered via lezz demo registry", len(clusters)),
+			})
+		}
+
 		if err := d.Run(); err != nil {
 			slog.Error("dashboard error", "error", err)
 		}
