@@ -12,6 +12,7 @@ import (
 
 	"github.com/james-gibson/adhd/internal/config"
 	"github.com/james-gibson/adhd/internal/dashboard"
+	"github.com/james-gibson/adhd/internal/demo"
 	"github.com/james-gibson/adhd/internal/headless"
 	"github.com/james-gibson/adhd/internal/telemetry"
 )
@@ -27,6 +28,7 @@ var (
 	primeAddrFlag = flag.String("prime-addr", "", "address of prime smoke-alarm (required if --prime-plus)")
 	bufferSizeFlag = flag.Int("buffer-size", 1000, "max number of logs to buffer before pushing to prime")
 	mcpAddrFlag   = flag.String("mcp-addr", "", "override MCP server address (e.g., :0 for random port)")
+	demoFlag      = flag.Bool("demo", false, "discover a lezz demo cluster via mDNS instead of loading config")
 )
 
 func main() {
@@ -60,11 +62,24 @@ func main() {
 		}()
 	}
 
-	// Load configuration
-	cfg, err := config.Load(*configFlag)
-	if err != nil {
-		slog.Error("failed to load config", "path", *configFlag, "error", err)
-		os.Exit(1)
+	// Load configuration — either from file or by discovering a lezz demo cluster.
+	var cfg *config.Config
+	if *demoFlag {
+		fmt.Fprintf(os.Stderr, "browsing for lezz demo cluster (timeout %s)...\n", demo.DefaultTimeout)
+		clusters, discoverErr := demo.Browse(ctx, demo.DefaultTimeout)
+		if discoverErr != nil {
+			fmt.Fprintln(os.Stderr, "demo discovery failed:", discoverErr)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "found %d cluster(s)\n", len(clusters))
+		cfg = demo.ConfigFromClusters(clusters)
+	} else {
+		var loadErr error
+		cfg, loadErr = config.Load(*configFlag)
+		if loadErr != nil {
+			slog.Error("failed to load config", "path", *configFlag, "error", loadErr)
+			os.Exit(1)
+		}
 	}
 
 	if cfg.IsNetworkingEnabled() {
