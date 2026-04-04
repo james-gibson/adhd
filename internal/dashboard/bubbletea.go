@@ -377,7 +377,7 @@ func (m *BubbleTeaDashboard) View() string {
 			if i < m.bootIndex {
 				// Light has been initialized - show its actual color
 				status := statusIndicator(light.Status)
-				s.WriteString(fmt.Sprintf("  %s", status))
+				fmt.Fprintf(&s, "  %s", status)
 			} else if i == m.bootIndex {
 				// Currently initializing - show animated yellow
 				s.WriteString(bootStyle.Render("  🟡"))
@@ -391,7 +391,7 @@ func (m *BubbleTeaDashboard) View() string {
 			if light.Type != "feature" {
 				typeStr = fmt.Sprintf(" [%s]", light.Type)
 			}
-			s.WriteString(fmt.Sprintf(" %s%s\n", light.Name, typeStr))
+			fmt.Fprintf(&s, " %s%s\n", light.Name, typeStr)
 		}
 
 		s.WriteString(strings.Repeat("\n", 5))
@@ -471,7 +471,7 @@ func (m *BubbleTeaDashboard) View() string {
 				continue
 			}
 
-			s.WriteString(fmt.Sprintf("\n%s  (%d features)\n", source, len(sourceLights)))
+			fmt.Fprintf(&s, "\n%s  (%d features)\n", source, len(sourceLights))
 			s.WriteString(strings.Repeat("─", 40) + "\n")
 
 			for _, light := range sourceLights {
@@ -498,19 +498,19 @@ func (m *BubbleTeaDashboard) View() string {
 	s.WriteString("\n")
 	if len(allLights) > m.selectedIndex {
 		selectedLight := allLights[m.selectedIndex]
-		s.WriteString(fmt.Sprintf("(%d/%d) %s [%s]\n", m.selectedIndex+1, len(allLights), selectedLight.Name, selectedLight.Type))
+		fmt.Fprintf(&s, "(%d/%d) %s [%s]\n", m.selectedIndex+1, len(allLights), selectedLight.Name, selectedLight.Type)
 		if selectedLight.Details != "" {
-			s.WriteString(fmt.Sprintf("Details: %s\n", selectedLight.Details))
+			fmt.Fprintf(&s, "Details: %s\n", selectedLight.Details)
 		}
 		// Show Gherkin file reference if available
 		if gherkinFile, ok := selectedLight.SourceMeta["gherkin_file"]; ok && gherkinFile != "" {
-			s.WriteString(fmt.Sprintf("Spec: %s\n", gherkinFile))
+			fmt.Fprintf(&s, "Spec: %s\n", gherkinFile)
 		}
 	}
 
 	// Message display
 	if m.messageTimer > 0 {
-		s.WriteString(fmt.Sprintf("\n✓ %s\n", m.message))
+		fmt.Fprintf(&s, "\n✓ %s\n", m.message)
 	} else {
 		s.WriteString("\n")
 	}
@@ -526,7 +526,7 @@ func (m *BubbleTeaDashboard) Shutdown() {
 		m.cancel()
 	}
 	if m.mcpServer != nil {
-		m.mcpServer.Shutdown(m.ctx)
+		_ = m.mcpServer.Shutdown(m.ctx)
 	}
 }
 

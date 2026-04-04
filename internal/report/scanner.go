@@ -58,7 +58,7 @@ func ScanLog(path string) (*CallLog, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	cl := &CallLog{
 		Path:     path,

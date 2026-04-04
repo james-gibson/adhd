@@ -210,11 +210,11 @@ func pollUntilOK(ctx context.Context, url string) error {
 		}
 		resp, err := client.Get(url)
 		if err == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil
 		}
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -228,7 +228,7 @@ func freeLocalAddr(t *testing.T) string {
 		t.Fatalf("freeLocalAddr: %v", err)
 	}
 	addr := ln.Addr().String()
-	ln.Close()
+	_ = ln.Close()
 	return addr
 }
 

@@ -120,7 +120,9 @@ func main() {
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		<-sigChan
 		slog.Info("shutting down")
-		server.Shutdown()
+		if err := server.Shutdown(); err != nil {
+			slog.Warn("server shutdown error", "error", err)
+		}
 	} else {
 		// TUI mode: Bubble Tea dashboard
 		d := dashboard.NewBubbleTeaDashboard(cfg)

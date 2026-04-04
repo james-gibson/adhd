@@ -154,7 +154,7 @@ func (w *Watcher) pollOnce(ctx context.Context, endpoint config.SmokeAlarmEndpoi
 		}
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var status StatusResponse
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
@@ -229,7 +229,7 @@ func (w *Watcher) sseSubscribe(ctx context.Context, url string, endpointName str
 		slog.Debug("SSE connection failed", "endpoint", endpointName, "error", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		slog.Warn("SSE request returned non-OK status", "endpoint", endpointName, "status", resp.StatusCode)

@@ -27,12 +27,14 @@ func TestFireMarshalDiscoveryADHD(t *testing.T) {
 
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 	mcpServer := mcpserver.NewServer(cfg, cluster)
-	mcpServer.Start(context.Background())
-	defer mcpServer.Shutdown(context.Background())
+	if err := mcpServer.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mcpServer.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -82,12 +84,14 @@ func TestFireMarshalToolsListADHD(t *testing.T) {
 
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 	mcpServer := mcpserver.NewServer(cfg, cluster)
-	mcpServer.Start(context.Background())
-	defer mcpServer.Shutdown(context.Background())
+	if err := mcpServer.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mcpServer.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -174,12 +178,14 @@ func TestFireMarshalProbeADHDStatus(t *testing.T) {
 
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 	mcpServer := mcpserver.NewServer(cfg, cluster)
-	mcpServer.Start(context.Background())
-	defer mcpServer.Shutdown(context.Background())
+	if err := mcpServer.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mcpServer.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -244,12 +250,14 @@ func TestFireMarshalProbeADHDLightsList(t *testing.T) {
 
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 	mcpServer := mcpserver.NewServer(cfg, cluster)
-	mcpServer.Start(context.Background())
-	defer mcpServer.Shutdown(context.Background())
+	if err := mcpServer.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mcpServer.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -317,12 +325,14 @@ func TestFireMarshalProbeADHDLightsGet(t *testing.T) {
 
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 	mcpServer := mcpserver.NewServer(cfg, cluster)
-	mcpServer.Start(context.Background())
-	defer mcpServer.Shutdown(context.Background())
+	if err := mcpServer.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mcpServer.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -380,12 +390,14 @@ func TestFireMarshalComplianceAllTools(t *testing.T) {
 
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 	mcpServer := mcpserver.NewServer(cfg, cluster)
-	mcpServer.Start(context.Background())
-	defer mcpServer.Shutdown(context.Background())
+	if err := mcpServer.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mcpServer.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -445,12 +457,14 @@ func TestFireMarshalErrorHandling(t *testing.T) {
 
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 	mcpServer := mcpserver.NewServer(cfg, cluster)
-	mcpServer.Start(context.Background())
-	defer mcpServer.Shutdown(context.Background())
+	if err := mcpServer.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mcpServer.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -523,7 +537,7 @@ func doMCPRequest(t *testing.T, url string, req map[string]interface{}) map[stri
 	if err != nil {
 		t.Fatalf("failed to make request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

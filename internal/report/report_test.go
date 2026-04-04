@@ -34,7 +34,7 @@ func writeJSONLLog(t *testing.T, entries []map[string]interface{}) string {
 	if err != nil {
 		t.Fatalf("create temp log: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	enc := json.NewEncoder(f)
 	for _, e := range entries {
 		if err := enc.Encode(e); err != nil {
@@ -256,7 +256,7 @@ func TestReportFromMockServerTraffic(t *testing.T) {
 		if err == nil {
 			var result map[string]interface{}
 			_ = json.NewDecoder(resp.Body).Decode(&result)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			hasError := result["error"] != nil
 			_ = enc.Encode(entry("response", method, hasError))
 		}
@@ -272,11 +272,11 @@ func TestReportFromMockServerTraffic(t *testing.T) {
 	if resp != nil {
 		var result map[string]interface{}
 		_ = json.NewDecoder(resp.Body).Decode(&result)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		_ = enc.Encode(entry("response", "adhd.lights.get", result["error"] != nil))
 	}
 
-	f.Close()
+	_ = f.Close()
 
 	cl, err := report.ScanLog(logPath)
 	if err != nil {

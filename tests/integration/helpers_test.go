@@ -91,7 +91,7 @@ func MockSmokeAlarmServer(t *testing.T, initialTargets []mockTargetStatus) (
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 		} else {
 			http.NotFound(w, r)
 		}
@@ -113,7 +113,7 @@ func FreeAddr(t *testing.T) string {
 		t.Fatalf("failed to find free port: %v", err)
 	}
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 	return addr
 }
 
@@ -185,7 +185,7 @@ func MockMCPServer(t *testing.T) *httptest.Server {
 					},
 				},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 
 		case "tools/list":
 			resp := map[string]interface{}{
@@ -198,7 +198,7 @@ func MockMCPServer(t *testing.T) *httptest.Server {
 					},
 				},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 
 		default:
 			resp := map[string]interface{}{
@@ -210,7 +210,7 @@ func MockMCPServer(t *testing.T) *httptest.Server {
 				},
 			}
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 		}
 	}))
 
@@ -238,7 +238,7 @@ func DoJSONRPCCall(t *testing.T, endpoint string, method string, params interfac
 	if err != nil {
 		t.Fatalf("failed to make request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

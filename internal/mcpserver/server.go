@@ -148,7 +148,9 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 		resp.Result = result
 	}
 
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		slog.Warn("encode response", "error", err)
+	}
 }
 
 // handleMCPSSE handles SSE requests
@@ -165,7 +167,9 @@ func (s *Server) handleMCPSSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send initial heartbeat
-	fmt.Fprintf(w, "data: {\"type\":\"init\"}\n\n")
+	if _, err := fmt.Fprintf(w, "data: {\"type\":\"init\"}\n\n"); err != nil {
+		slog.Warn("write SSE init", "error", err)
+	}
 	flusher.Flush()
 
 	// Block until context is done
@@ -386,7 +390,9 @@ func (s *Server) respondError(w http.ResponseWriter, code int, message string) {
 		},
 	}
 
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		slog.Warn("encode response", "error", err)
+	}
 }
 
 // JSON-RPC types

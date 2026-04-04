@@ -203,11 +203,11 @@ func waitForMCPServer(ctx context.Context, mcpURL string) error {
 
 		resp, err := client.Post(mcpURL, "application/json", bytes.NewReader(body))
 		if err == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil
 		}
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -231,7 +231,7 @@ func mcpCall(t *testing.T, mcpURL, method string, params interface{}) map[string
 	if err != nil {
 		t.Fatalf("POST %s %s: %v", mcpURL, method, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

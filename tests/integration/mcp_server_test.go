@@ -20,7 +20,7 @@ func startMCPServer(t *testing.T, cluster *lights.Cluster) string {
 	}
 
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 
 	cfg := config.MCPServerConfig{
 		Enabled: true,
@@ -36,7 +36,7 @@ func startMCPServer(t *testing.T, cluster *lights.Cluster) string {
 	time.Sleep(100 * time.Millisecond)
 
 	t.Cleanup(func() {
-		server.Shutdown(context.Background())
+		_ = server.Shutdown(context.Background())
 	})
 
 	return addr

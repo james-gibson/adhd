@@ -107,7 +107,7 @@ func (d *Dashboard) Run() {
 		if err := d.mcpServer.Start(ctx); err != nil {
 			slog.Error("failed to start MCP server", "error", err)
 		}
-		defer d.mcpServer.Shutdown(ctx)
+		defer func() { _ = d.mcpServer.Shutdown(ctx) }()
 	}
 
 	// Start smoke-alarm watcher if configured
@@ -274,45 +274,6 @@ func (d *Dashboard) render() {
 	}
 	fmt.Println()
 	fmt.Println("[Commands] j/k=up/down  s=show  r=refresh  e=execute  q=quit")
-}
-
-// readInput reads and processes a single keystroke
-func (d *Dashboard) readInput(reader *bufio.Reader) {
-	input, _ := reader.ReadString('\n')
-	cmd := strings.TrimSpace(input)
-
-	if cmd == "" {
-		return
-	}
-
-	switch cmd {
-	case "q":
-		d.running = false
-	case "j", "down":
-		if d.selectedIndex < len(d.lights.All())-1 {
-			d.selectedIndex++
-		}
-	case "k", "up":
-		if d.selectedIndex > 0 {
-			d.selectedIndex--
-		}
-	case "r":
-		if len(d.lights.All()) > d.selectedIndex {
-			slog.Debug("refreshing light", "index", d.selectedIndex)
-		}
-	case "s":
-		if len(d.lights.All()) > d.selectedIndex {
-			light := d.lights.All()[d.selectedIndex]
-			slog.Info("show service details", "light", light.Name)
-		}
-	case "e":
-		if len(d.lights.All()) > d.selectedIndex {
-			light := d.lights.All()[d.selectedIndex]
-			slog.Info("execute command for light", "light", light.Name)
-		}
-	default:
-		slog.Debug("unknown command", "cmd", cmd)
-	}
 }
 
 // statusIndicator returns the emoji or character for a light status

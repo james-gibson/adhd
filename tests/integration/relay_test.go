@@ -59,7 +59,7 @@ func sendMCPRequest(t *testing.T, endpoint, method string, params interface{}) m
 	if err != nil {
 		t.Fatalf("MCP call %q to %s failed: %v", method, endpoint, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var result map[string]interface{}
 	_ = json.NewDecoder(resp.Body).Decode(&result)
 	return result

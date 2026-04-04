@@ -21,7 +21,7 @@ func freeAddr(t *testing.T) string {
 		t.Fatalf("failed to find free port: %v", err)
 	}
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 	return addr
 }
 
@@ -46,7 +46,7 @@ func doJSONRPCCall(t *testing.T, addr string, method string, params interface{})
 	if err != nil {
 		t.Fatalf("failed to make request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -70,7 +70,7 @@ func TestServerInitialize(t *testing.T) {
 	if err := server.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start server: %v", err)
 	}
-	defer server.Shutdown(context.Background())
+	defer func() { _ = server.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond) // Give server time to start
 
@@ -135,8 +135,10 @@ func TestServerStatus(t *testing.T) {
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 
 	server := NewServer(cfg, cluster)
-	server.Start(context.Background())
-	defer server.Shutdown(context.Background())
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -186,8 +188,10 @@ func TestServerLightsList(t *testing.T) {
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 
 	server := NewServer(cfg, cluster)
-	server.Start(context.Background())
-	defer server.Shutdown(context.Background())
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -236,8 +240,10 @@ func TestServerLightsGet(t *testing.T) {
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 
 	server := NewServer(cfg, cluster)
-	server.Start(context.Background())
-	defer server.Shutdown(context.Background())
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -267,8 +273,10 @@ func TestServerLightsGetNotFound(t *testing.T) {
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 
 	server := NewServer(cfg, cluster)
-	server.Start(context.Background())
-	defer server.Shutdown(context.Background())
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -296,8 +304,10 @@ func TestServerLightsGetMissingName(t *testing.T) {
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 
 	server := NewServer(cfg, cluster)
-	server.Start(context.Background())
-	defer server.Shutdown(context.Background())
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -323,8 +333,10 @@ func TestServerToolsList(t *testing.T) {
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 
 	server := NewServer(cfg, cluster)
-	server.Start(context.Background())
-	defer server.Shutdown(context.Background())
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -378,8 +390,10 @@ func TestServerPing(t *testing.T) {
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 
 	server := NewServer(cfg, cluster)
-	server.Start(context.Background())
-	defer server.Shutdown(context.Background())
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -404,8 +418,10 @@ func TestServerUnknownMethod(t *testing.T) {
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 
 	server := NewServer(cfg, cluster)
-	server.Start(context.Background())
-	defer server.Shutdown(context.Background())
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -436,7 +452,7 @@ func TestServerDisabledServer(t *testing.T) {
 	if err := server.Start(context.Background()); err != nil {
 		t.Fatalf("Start should not error even when disabled: %v", err)
 	}
-	server.Shutdown(context.Background())
+	_ = server.Shutdown(context.Background())
 
 	// No error expected, server should just skip startup
 }
@@ -449,8 +465,10 @@ func TestServerJSONRPC20Compliance(t *testing.T) {
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 
 	server := NewServer(cfg, cluster)
-	server.Start(context.Background())
-	defer server.Shutdown(context.Background())
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -476,8 +494,8 @@ func TestServerJSONRPC20Compliance(t *testing.T) {
 		resp, _ := http.Post(url, "application/json", bytes.NewReader(body))
 
 		var result map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&result)
-		resp.Body.Close()
+		_ = json.NewDecoder(resp.Body).Decode(&result)
+		_ = resp.Body.Close()
 
 		// ID can be any JSON value, just verify it's echoed
 		if result["id"] == nil {
@@ -506,8 +524,10 @@ func TestServerMultipleLights(t *testing.T) {
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 
 	server := NewServer(cfg, cluster)
-	server.Start(context.Background())
-	defer server.Shutdown(context.Background())
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -552,8 +572,10 @@ func TestServerStatusSummaryAllStatuses(t *testing.T) {
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 
 	server := NewServer(cfg, cluster)
-	server.Start(context.Background())
-	defer server.Shutdown(context.Background())
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 

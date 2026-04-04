@@ -411,7 +411,7 @@ func (s *Server) Shutdown() error {
 	s.cancel()
 
 	if s.mcpServer != nil {
-		s.mcpServer.Shutdown(s.ctx)
+		_ = s.mcpServer.Shutdown(s.ctx)
 	}
 
 	// Flush and close message queue if configured

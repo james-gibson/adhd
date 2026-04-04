@@ -116,7 +116,7 @@ func parseFeature(filePath string) (Feature, error) {
 	if err != nil {
 		return Feature{}, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	feature := Feature{
 		FilePath: filePath,

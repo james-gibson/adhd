@@ -219,7 +219,7 @@ func parseScenarios(filePath string) ([]parsedScenario, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var scenarios []parsedScenario
 	scanner := bufio.NewScanner(f)
@@ -604,7 +604,7 @@ func buildFeatureResult(filePath string, log *CallLog) FeatureResult {
 		fr.Name = filepath.Base(filePath)
 		return fr
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {

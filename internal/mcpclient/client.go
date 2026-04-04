@@ -166,7 +166,7 @@ func (c *Client) doRPC(ctx context.Context, method string, params interface{}) (
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	if httpResp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d", httpResp.StatusCode)

@@ -205,7 +205,7 @@ func BenchmarkADHDHealthMonitorProbes(b *testing.B) {
 
 		// Perform one probe
 		client := mcpclient.NewHTTPClient(server.URL, 2*time.Second)
-		client.Probe(ctx)
+		_, _ = client.Probe(ctx)
 
 		cancel()
 	}

@@ -87,7 +87,9 @@ func (a *mutableAlarm) handler() http.Handler {
 			data, _ := json.Marshal(resp)
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			return
+		}
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}

@@ -51,7 +51,7 @@ func freeAddr(t *testing.T) string {
 		t.Fatalf("freeAddr: %v", err)
 	}
 	addr := l.Addr().String()
-	l.Close()
+	_ = l.Close()
 	return addr
 }
 
@@ -123,7 +123,7 @@ func doMCPCall(endpoint, method string) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -143,7 +143,7 @@ func parseLog(path string) (logStats, error) {
 	if err != nil {
 		return logStats{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	stats := logStats{
 		byMethod: make(map[string]int),
@@ -478,11 +478,11 @@ func writeTopologyManifest(t *testing.T, root string, prime *node, plusNodes []*
 
 	var sb strings.Builder
 	sb.WriteString("# ADHD load test topology\n")
-	sb.WriteString(fmt.Sprintf("prime:\n  addr: %s\n  log: %s\n\n", prime.addr, prime.logPath))
+	fmt.Fprintf(&sb, "prime:\n  addr: %s\n  log: %s\n\n", prime.addr, prime.logPath)
 	sb.WriteString("plus_nodes:\n")
 	for i, n := range plusNodes {
-		sb.WriteString(fmt.Sprintf("  - id: plus-%02d\n    addr: %s\n    log: %s\n    prime: %s\n",
-			i, n.addr, n.logPath, prime.endpoint()))
+		fmt.Fprintf(&sb, "  - id: plus-%02d\n    addr: %s\n    log: %s\n    prime: %s\n",
+			i, n.addr, n.logPath, prime.endpoint())
 	}
 
 	path := filepath.Join(root, "topology.yaml")

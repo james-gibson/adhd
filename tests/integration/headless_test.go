@@ -44,8 +44,8 @@ func TestHeadlessModeLogging(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	cfg := &config.Config{
 		MCPServer: config.MCPServerConfig{
@@ -58,7 +58,7 @@ func TestHeadlessModeLogging(t *testing.T) {
 	if err := server.Start(tmpFile.Name()); err != nil {
 		t.Fatalf("failed to start headless server: %v", err)
 	}
-	defer server.Shutdown()
+	defer func() { _ = server.Shutdown() }()
 
 	// Log a traffic entry
 	entry := headless.MCPTrafficLog{
@@ -117,7 +117,7 @@ func TestHeadlessMCPServerAcceptsCalls(t *testing.T) {
 	if err := server.Start(""); err != nil {
 		t.Fatalf("failed to start headless server: %v", err)
 	}
-	defer server.Shutdown()
+	defer func() { _ = server.Shutdown() }()
 
 	// Add a test light to the cluster
 	light := lights.New("test-feature", "feature")
@@ -163,7 +163,7 @@ func TestHeadlessPrimePlusIntegration(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer prime.Close()
 
@@ -180,7 +180,7 @@ func TestHeadlessPrimePlusIntegration(t *testing.T) {
 	if err := server.Start(""); err != nil {
 		t.Fatalf("failed to start headless server: %v", err)
 	}
-	defer server.Shutdown()
+	defer func() { _ = server.Shutdown() }()
 
 	// Log some traffic
 	for i := 0; i < 3; i++ {
@@ -271,7 +271,7 @@ func TestHeadlessIsotopeRegistration(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer smokeAlarm.Close()
 
@@ -286,7 +286,7 @@ func TestHeadlessIsotopeRegistration(t *testing.T) {
 	if err := server.Start(""); err != nil {
 		t.Fatalf("failed to start headless server: %v", err)
 	}
-	defer server.Shutdown()
+	defer func() { _ = server.Shutdown() }()
 
 	// Register with smoke-alarm
 	if err := server.RegisterAsIsotope(smokeAlarm.URL); err != nil {
@@ -311,7 +311,7 @@ func TestHeadlessMCPClientCanProbe(t *testing.T) {
 	if err := server.Start(""); err != nil {
 		t.Fatalf("failed to start headless server: %v", err)
 	}
-	defer server.Shutdown()
+	defer func() { _ = server.Shutdown() }()
 
 	// Create a client and attempt to probe
 	// Note: We can't get the actual bound address from Server without exposing it
@@ -325,7 +325,7 @@ func TestHeadlessConfigFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	configYAML := `
 mcp_server:
@@ -373,7 +373,7 @@ func TestHeadlessEmptyCluster(t *testing.T) {
 	if err := server.Start(""); err != nil {
 		t.Fatalf("failed to start headless server: %v", err)
 	}
-	defer server.Shutdown()
+	defer func() { _ = server.Shutdown() }()
 
 	// Should be able to log traffic even with no features
 	entry := headless.MCPTrafficLog{
@@ -402,7 +402,7 @@ func TestHeadlessPushToUnreachablePrimeFails(t *testing.T) {
 	if err := server.Start(""); err != nil {
 		t.Fatalf("failed to start headless server: %v", err)
 	}
-	defer server.Shutdown()
+	defer func() { _ = server.Shutdown() }()
 
 	// Log some traffic
 	entry := headless.MCPTrafficLog{
@@ -460,7 +460,7 @@ func TestHeadlessCircuitBreakerPattern(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer prime.Close()
 
@@ -477,7 +477,7 @@ func TestHeadlessCircuitBreakerPattern(t *testing.T) {
 	if err := server.Start(""); err != nil {
 		t.Fatalf("failed to start: %v", err)
 	}
-	defer server.Shutdown()
+	defer func() { _ = server.Shutdown() }()
 
 	// Log traffic
 	entry := headless.MCPTrafficLog{

@@ -12,19 +12,19 @@ func Format(results []FeatureResult, log *CallLog) string {
 
 	// Header
 	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
-	sb.WriteString(fmt.Sprintf("ADHD MCP Traffic Report  %s\n", now))
+	fmt.Fprintf(&sb, "ADHD MCP Traffic Report  %s\n", now)
 	sb.WriteString(strings.Repeat("━", 72) + "\n")
-	sb.WriteString(fmt.Sprintf("Log:  %s\n", log.Path))
-	sb.WriteString(fmt.Sprintf("Lines: %d total, %d valid, %d corrupt\n\n", log.TotalLines, log.ValidLines, log.InvalidLines))
+	fmt.Fprintf(&sb, "Log:  %s\n", log.Path)
+	fmt.Fprintf(&sb, "Lines: %d total, %d valid, %d corrupt\n\n", log.TotalLines, log.ValidLines, log.InvalidLines)
 
 	// Method coverage table
 	sb.WriteString("Observed Methods\n")
 	sb.WriteString(strings.Repeat("─", 52) + "\n")
-	sb.WriteString(fmt.Sprintf("  %-35s  %6s  %6s  %6s\n", "method", "calls", "ok", "errors"))
+	fmt.Fprintf(&sb, "  %-35s  %6s  %6s  %6s\n", "method", "calls", "ok", "errors")
 	for _, method := range methodOrder(log) {
 		ev := log.Evidence[method]
 		ok := ev.Responses - ev.Errors
-		sb.WriteString(fmt.Sprintf("  %-35s  %6d  %6d  %6d\n", method, ev.Requests, ok, ev.Errors))
+		fmt.Fprintf(&sb, "  %-35s  %6d  %6d  %6d\n", method, ev.Requests, ok, ev.Errors)
 	}
 	sb.WriteString("\n")
 
@@ -43,17 +43,17 @@ func Format(results []FeatureResult, log *CallLog) string {
 	total := totalPass + totalFail + totalNoCov + totalUnver
 	sb.WriteString(strings.Repeat("━", 72) + "\n")
 	sb.WriteString("Summary\n")
-	sb.WriteString(fmt.Sprintf("  ✓ PASS            %d\n", totalPass))
-	sb.WriteString(fmt.Sprintf("  ✗ FAIL            %d\n", totalFail))
-	sb.WriteString(fmt.Sprintf("  ○ NO COVERAGE     %d\n", totalNoCov))
-	sb.WriteString(fmt.Sprintf("  – NOT VERIFIABLE  %d\n", totalUnver))
-	sb.WriteString(fmt.Sprintf("  Total scenarios:  %d\n", total))
+	fmt.Fprintf(&sb, "  ✓ PASS            %d\n", totalPass)
+	fmt.Fprintf(&sb, "  ✗ FAIL            %d\n", totalFail)
+	fmt.Fprintf(&sb, "  ○ NO COVERAGE     %d\n", totalNoCov)
+	fmt.Fprintf(&sb, "  – NOT VERIFIABLE  %d\n", totalUnver)
+	fmt.Fprintf(&sb, "  Total scenarios:  %d\n", total)
 
 	if total > 0 {
 		verifiable := totalPass + totalFail + totalNoCov
 		if verifiable > 0 {
 			pct := float64(totalPass) / float64(verifiable) * 100
-			sb.WriteString(fmt.Sprintf("  Coverage:         %.0f%% of verifiable scenarios passing\n", pct))
+			fmt.Fprintf(&sb, "  Coverage:         %.0f%% of verifiable scenarios passing\n", pct)
 		}
 	}
 
@@ -68,10 +68,10 @@ func featureBlock(fr FeatureResult) string {
 	if fr.Domain != "" {
 		domainTag = "  @domain-" + fr.Domain
 	}
-	sb.WriteString(fmt.Sprintf("Feature: %s%s\n", fr.Name, domainTag))
-	sb.WriteString(fmt.Sprintf("  %s\n", fr.FilePath))
-	sb.WriteString(fmt.Sprintf("  ✓ %d  ✗ %d  ○ %d  – %d\n",
-		fr.PassCount, fr.FailCount, fr.NoCoverage, fr.Unverifiable))
+	fmt.Fprintf(&sb, "Feature: %s%s\n", fr.Name, domainTag)
+	fmt.Fprintf(&sb, "  %s\n", fr.FilePath)
+	fmt.Fprintf(&sb, "  ✓ %d  ✗ %d  ○ %d  – %d\n",
+		fr.PassCount, fr.FailCount, fr.NoCoverage, fr.Unverifiable)
 	sb.WriteString(strings.Repeat("─", 72) + "\n")
 
 	for _, sc := range fr.Scenarios {
@@ -88,7 +88,7 @@ func scenarioLine(sc ScenarioResult) string {
 	symbol := sc.Status.Symbol()
 	label := sc.Status.String()
 
-	sb.WriteString(fmt.Sprintf("  %s  %-16s  %s\n", symbol, label, sc.ScenarioName))
+	fmt.Fprintf(&sb, "  %s  %-16s  %s\n", symbol, label, sc.ScenarioName)
 
 	// Show evidence breakdown for non-trivial results
 	if sc.Status == StatusPass || sc.Status == StatusFail || sc.Status == StatusNoCoverage {
@@ -110,10 +110,10 @@ func scenarioLine(sc ScenarioResult) string {
 				indicator = "✗"
 				detail = fmt.Sprintf("%d calls, all errored", ev.Calls)
 			}
-			sb.WriteString(fmt.Sprintf("       %s  %-35s  %s\n", indicator, ev.Method, detail))
+			fmt.Fprintf(&sb, "       %s  %-35s  %s\n", indicator, ev.Method, detail)
 		}
 	} else if sc.Status == StatusNotVerifiable && sc.Note != "" {
-		sb.WriteString(fmt.Sprintf("          note: %s\n", sc.Note))
+		fmt.Fprintf(&sb, "          note: %s\n", sc.Note)
 	}
 
 	return sb.String()

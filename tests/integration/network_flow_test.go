@@ -212,7 +212,7 @@ func TestNetworkFlowWithMCPServer(t *testing.T) {
 	// Step 3: Start ADHD's MCP server
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 
 	mcpCfg := config.MCPServerConfig{
 		Enabled: true,
@@ -220,8 +220,10 @@ func TestNetworkFlowWithMCPServer(t *testing.T) {
 	}
 
 	mcpServer := mcpserver.NewServer(mcpCfg, cluster)
-	mcpServer.Start(context.Background())
-	defer mcpServer.Shutdown(context.Background())
+	if err := mcpServer.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mcpServer.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -279,12 +281,14 @@ func TestNetworkFlowStatusPropagation(t *testing.T) {
 	// Start MCP server
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
 	mcpAddr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 
 	mcpCfg := config.MCPServerConfig{Enabled: true, Addr: mcpAddr}
 	mcpServer := mcpserver.NewServer(mcpCfg, cluster)
-	mcpServer.Start(context.Background())
-	defer mcpServer.Shutdown(context.Background())
+	if err := mcpServer.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mcpServer.Shutdown(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
 

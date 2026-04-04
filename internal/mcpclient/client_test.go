@@ -46,7 +46,7 @@ func TestProbeSuccessful(t *testing.T) {
 					},
 				},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 
 		case "tools/list":
 			resp := map[string]interface{}{
@@ -59,7 +59,7 @@ func TestProbeSuccessful(t *testing.T) {
 					},
 				},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 
 		default:
 			http.Error(w, "unknown method", http.StatusBadRequest)
@@ -97,7 +97,7 @@ func TestProbeSuccessful(t *testing.T) {
 func TestProbeInitializeFails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		method, _ := req["method"].(string)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -113,7 +113,7 @@ func TestProbeInitializeFails(t *testing.T) {
 					"message": "server error",
 				},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 		}
 	}))
 	defer server.Close()
@@ -142,7 +142,7 @@ func TestProbeInitializeFails(t *testing.T) {
 func TestProbeToolsListFails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		method, _ := req["method"].(string)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -157,7 +157,7 @@ func TestProbeToolsListFails(t *testing.T) {
 					"serverInfo":      map[string]string{"name": "test"},
 				},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 
 		case "tools/list":
 			// Return JSON-RPC error
@@ -169,7 +169,7 @@ func TestProbeToolsListFails(t *testing.T) {
 					"message": "tools not available",
 				},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 		}
 	}))
 	defer server.Close()
@@ -229,7 +229,7 @@ func TestProbeUnreachableEndpoint(t *testing.T) {
 func TestProbeMeasuresLatency(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		method, _ := req["method"].(string)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -241,7 +241,7 @@ func TestProbeMeasuresLatency(t *testing.T) {
 				"id":      req["id"],
 				"result":  map[string]interface{}{"protocolVersion": "2024-11-05"},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 
 		case "tools/list":
 			time.Sleep(50 * time.Millisecond) // Simulate some latency
@@ -250,7 +250,7 @@ func TestProbeMeasuresLatency(t *testing.T) {
 				"id":      req["id"],
 				"result":  map[string]interface{}{"tools": []map[string]string{}},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 		}
 	}))
 	defer server.Close()
@@ -267,7 +267,7 @@ func TestProbeMeasuresLatency(t *testing.T) {
 func TestProbeEmptyToolsList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		method, _ := req["method"].(string)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -279,7 +279,7 @@ func TestProbeEmptyToolsList(t *testing.T) {
 				"id":      req["id"],
 				"result":  map[string]interface{}{"protocolVersion": "2024-11-05"},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 
 		case "tools/list":
 			resp := map[string]interface{}{
@@ -287,7 +287,7 @@ func TestProbeEmptyToolsList(t *testing.T) {
 				"id":      req["id"],
 				"result":  map[string]interface{}{"tools": []map[string]string{}},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 		}
 	}))
 	defer server.Close()
@@ -307,7 +307,7 @@ func TestProbeEmptyToolsList(t *testing.T) {
 func TestProberWrapper(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		method, _ := req["method"].(string)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -319,7 +319,7 @@ func TestProberWrapper(t *testing.T) {
 				"id":      req["id"],
 				"result":  map[string]interface{}{"protocolVersion": "2024-11-05"},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 
 		case "tools/list":
 			resp := map[string]interface{}{
@@ -331,7 +331,7 @@ func TestProberWrapper(t *testing.T) {
 					},
 				},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 		}
 	}))
 	defer server.Close()
@@ -354,7 +354,7 @@ func TestProberWrapper(t *testing.T) {
 func TestProbeContextTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		method, _ := req["method"].(string)
 
 		if method == "tools/list" {
@@ -367,7 +367,7 @@ func TestProbeContextTimeout(t *testing.T) {
 			"id":      req["id"],
 			"result":  map[string]interface{}{},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -402,7 +402,7 @@ func TestProbeInvalidEndpoint(t *testing.T) {
 func TestProbeMultipleTools(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		method, _ := req["method"].(string)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -414,7 +414,7 @@ func TestProbeMultipleTools(t *testing.T) {
 				"id":      req["id"],
 				"result":  map[string]interface{}{"protocolVersion": "2024-11-05"},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 
 		case "tools/list":
 			resp := map[string]interface{}{
@@ -430,7 +430,7 @@ func TestProbeMultipleTools(t *testing.T) {
 					},
 				},
 			}
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 		}
 	}))
 	defer server.Close()
@@ -460,7 +460,7 @@ func TestProbeWithoutResponse(t *testing.T) {
 		t.Fatalf("failed to create listener: %v", err)
 	}
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 
 	client := NewHTTPClient("http://"+addr, 500*time.Millisecond)
 	result, err := client.Probe(context.Background())
