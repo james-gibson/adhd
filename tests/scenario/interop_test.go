@@ -65,10 +65,17 @@ func ensureSmokeAlarmBinary(t *testing.T) string {
 				return
 			}
 		}
-		// Source not present (e.g. CI) — fall back to binary already in PATH.
+		// Source not present — check ~/.lezz/bin (managed by lezz), then PATH.
+		if home, err := os.UserHomeDir(); err == nil {
+			lezzBin := filepath.Join(home, ".lezz", "bin", "ocd-smoke-alarm")
+			if _, statErr := os.Stat(lezzBin); statErr == nil {
+				smokeAlarmBinary = lezzBin
+				return
+			}
+		}
 		p, lookErr := exec.LookPath("ocd-smoke-alarm")
 		if lookErr != nil {
-			buildSmokeAlarmErr = fmt.Errorf("ocd-smoke-alarm not found in source tree or PATH: %w", lookErr)
+			buildSmokeAlarmErr = fmt.Errorf("ocd-smoke-alarm not found in source tree, ~/.lezz/bin, or PATH: %w", lookErr)
 			return
 		}
 		smokeAlarmBinary = p
