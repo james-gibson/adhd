@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/james-gibson/adhd/internal/mcpclient"
@@ -144,65 +145,64 @@ func AutoDiscoverPrime(ctx context.Context, smokeAlarmURL string) (string, error
 	return "", fmt.Errorf("no prime instance found in discovered isotopes")
 }
 
-// RegisterIsotopeWithRole registers this instance as an isotope with role information
-func RegisterIsotopeWithRole(smokeAlarmURL string, role IsotopeRole, localAddr string) error {
+// IsotopeRecord mirrors the record returned by smoke-alarm's /isotope/register endpoint.
+type IsotopeRecord struct {
+	Name         string    `json:"name"`
+	Role         string    `json:"role"`
+	Endpoint     string    `json:"endpoint"`
+	Protocol     string    `json:"protocol"`
+	TrustRung    int       `json:"trust_rung"`
+	RungName     string    `json:"rung_name"`
+	RegisteredAt time.Time `json:"registered_at"`
+}
+
+// RegisterIsotopeWithRole registers this instance via smoke-alarm's REST /isotope/register
+// endpoint and returns the assigned trust rung (0 if registration fails).
+func RegisterIsotopeWithRole(smokeAlarmURL string, role IsotopeRole, localAddr string) (int, error) {
 	registration := map[string]interface{}{
-		"name":        "adhd",
-		"type":        "isotope",
-		"role":        string(role),
-		"endpoint":    localAddr,
-		"protocol":    "mcp",
-		"status":      "ready",
-		"timestamp":   time.Now().UTC(),
-		"description": fmt.Sprintf("ADHD %s instance with MCP traffic logging", role),
+		"name":     "adhd",
+		"role":     string(role),
+		"endpoint": localAddr,
+		"protocol": "mcp",
 	}
 
-	rpcRequest := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "smoke-alarm.isotope.register",
-		"params":  registration,
-	}
-
-	body, err := json.Marshal(rpcRequest)
+	body, err := json.Marshal(registration)
 	if err != nil {
-		return fmt.Errorf("failed to marshal registration: %w", err)
+		return 0, fmt.Errorf("failed to marshal registration: %w", err)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequest(http.MethodPost, smokeAlarmURL, bytes.NewReader(body))
+	registerURL := strings.TrimRight(smokeAlarmURL, "/") + "/isotope/register"
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest(http.MethodPost, registerURL, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
-
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("registration failed: %w", err)
+		return 0, fmt.Errorf("registration failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("registration returned status %d", resp.StatusCode)
+		return 0, fmt.Errorf("registration returned status %d", resp.StatusCode)
 	}
 
-	var rpcResp map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if errField, ok := rpcResp["error"]; ok && errField != nil {
-		return fmt.Errorf("isotope registration error: %v", errField)
+	var record IsotopeRecord
+	if err := json.NewDecoder(resp.Body).Decode(&record); err != nil {
+		return 0, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	slog.Info("registered as isotope",
 		"role", role,
 		"endpoint", localAddr,
 		"smoke_alarm", smokeAlarmURL,
+		"trust_rung", record.TrustRung,
+		"rung_name", record.RungName,
 	)
 
-	return nil
+	return record.TrustRung, nil
 }
 
 // PeriodicDiscovery runs discovery at intervals and auto-configures prime if not set

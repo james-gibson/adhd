@@ -29,6 +29,8 @@ type Server struct {
 	isPrimePlus  bool
 	role         IsotopeRole
 	primeAddr    string
+	trustLevel   int
+	zeroconfSrv  interface{ Shutdown() } // *zeroconf.Server; interface avoids import in this file
 	mu           sync.Mutex
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -371,21 +373,43 @@ func (s *Server) handleIncomingPushLogs(logs []map[string]interface{}) error {
 	return nil
 }
 
-// RegisterAsIsotope registers this ADHD instance with smoke-alarm via MCP with its topology role
+// RegisterAsIsotope registers this ADHD instance with smoke-alarm and stores the assigned trust rung.
 func (s *Server) RegisterAsIsotope(smokeAlarmURL string) error {
 	// Determine role for registration
 	role := s.role
 	if role == RoleStandalone {
-		// If no explicit role, infer from configuration
 		if s.isPrimePlus {
 			role = RolePrimePlus
 		} else {
-			role = RolePrime // By default, headless is prime unless configured as prime-plus
+			role = RolePrime
 		}
 	}
 
-	// Use the new registration with role
-	return RegisterIsotopeWithRole(smokeAlarmURL, role, s.cfg.MCPServer.Addr)
+	rung, err := RegisterIsotopeWithRole(smokeAlarmURL, role, s.cfg.MCPServer.Addr)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.trustLevel = rung
+	s.mu.Unlock()
+
+	// Advertise via mDNS so other nodes on the LAN can discover this isotope
+	if zSrv, mdnsErr := AdvertiseIsotope(s.cfg.MCPServer.Addr, string(role), rung); mdnsErr != nil {
+		slog.Warn("isotope mDNS advertisement failed", "error", mdnsErr)
+	} else {
+		s.mu.Lock()
+		s.zeroconfSrv = zSrv
+		s.mu.Unlock()
+	}
+
+	return nil
+}
+
+// TrustLevel returns the 42i trust rung assigned by smoke-alarm during registration.
+func (s *Server) TrustLevel() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.trustLevel
 }
 
 // AutoDiscoverPrime queries smoke-alarm to find the prime instance and auto-configure
@@ -409,6 +433,13 @@ func (s *Server) AutoDiscoverPrime(smokeAlarmURL string) bool {
 // Shutdown cleanly stops the headless server
 func (s *Server) Shutdown() error {
 	s.cancel()
+
+	s.mu.Lock()
+	zSrv := s.zeroconfSrv
+	s.mu.Unlock()
+	if zSrv != nil {
+		zSrv.Shutdown()
+	}
 
 	if s.mcpServer != nil {
 		_ = s.mcpServer.Shutdown(s.ctx)
