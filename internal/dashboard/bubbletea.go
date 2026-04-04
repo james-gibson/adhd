@@ -39,6 +39,11 @@ type BubbleTeaDashboard struct {
 	booting       bool
 	bootIndex     int
 	bootTicks     int
+	// clusterEverHealthy is set true the first time all smoke-alarm lights
+	// that have been probed are green. Feature lights are not driven red until
+	// this baseline is established, preventing startup flicker when adhd
+	// connects before the cluster is ready.
+	clusterEverHealthy bool
 }
 
 // NewBubbleTeaDashboardWithBrowser creates a BubbleTeaDashboard using the
@@ -365,14 +370,18 @@ func (m *BubbleTeaDashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // applyClusterHealthToFeatures computes the worst-case status across all
-// smoke-alarm lights and applies it to every feature light. Feature lights
-// reflect what the system is supposed to do; cluster health reflects whether
-// it is actually doing it. When the cluster is fully healthy all feature lights
-// go green. When any target is degraded or down they follow.
+// smoke-alarm lights and applies it to every feature light.
 //
-// Only lights with Source "smoke-alarm" or "mdns" are considered for the
-// aggregate. If no such lights exist or all are still dark (nothing probed yet)
-// the feature lights are left unchanged so they don't flicker at startup.
+// The baseline rule: feature lights stay dark until the cluster has been
+// fully healthy at least once (clusterEverHealthy). This prevents startup
+// flicker when adhd connects before the cluster is ready — early probe
+// failures are transient, not a signal about feature correctness.
+//
+// After the baseline is established, feature lights follow cluster health:
+// green when all probed targets are healthy, yellow/red when any are not.
+//
+// Only lights with Source "smoke-alarm" or "mdns" and a non-dark status
+// contribute to the aggregate.
 func (m *BubbleTeaDashboard) applyClusterHealthToFeatures() {
 	worst := lights.StatusGreen
 	hasData := false
@@ -382,7 +391,7 @@ func (m *BubbleTeaDashboard) applyClusterHealthToFeatures() {
 		}
 		s := l.GetStatus()
 		if s == lights.StatusDark {
-			continue // not yet probed — ignore
+			continue
 		}
 		hasData = true
 		switch s {
@@ -395,6 +404,14 @@ func (m *BubbleTeaDashboard) applyClusterHealthToFeatures() {
 		}
 	}
 	if !hasData {
+		return
+	}
+	if worst == lights.StatusGreen {
+		m.clusterEverHealthy = true
+	}
+	// Don't drive feature lights red/yellow until the cluster has established
+	// a known-good baseline. Before that, leave them dark.
+	if !m.clusterEverHealthy {
 		return
 	}
 	for _, l := range m.lights.All() {
