@@ -24,6 +24,9 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Install ocd-smoke-alarm
+        run: go install github.com/james-gibson/smoke-alarm/cmd/ocd-smoke-alarm@latest
+
       - name: Lint
         uses: golangci/golangci-lint-action@v7
         with:

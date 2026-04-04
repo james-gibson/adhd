@@ -43,30 +43,38 @@ var (
 func ensureSmokeAlarmBinary(t *testing.T) string {
 	t.Helper()
 	buildSmokeAlarmOnce.Do(func() {
-		tmp, err := os.MkdirTemp("", "ocd-smoke-alarm-bin-*")
-		if err != nil {
-			buildSmokeAlarmErr = fmt.Errorf("mktemp: %w", err)
-			return
-		}
-		out := filepath.Join(tmp, "ocd-smoke-alarm")
-		// Module root is two levels up from tests/scenario/
+		// Prefer building from source when the sibling repo is present.
 		root, err := filepath.Abs(filepath.Join("..", "..", "..", "ocd-smoke-alarm"))
-		if err != nil {
-			buildSmokeAlarmErr = fmt.Errorf("abs path: %w", err)
+		if err == nil {
+			if _, statErr := os.Stat(root); statErr == nil {
+				tmp, mkErr := os.MkdirTemp("", "ocd-smoke-alarm-bin-*")
+				if mkErr != nil {
+					buildSmokeAlarmErr = fmt.Errorf("mktemp: %w", mkErr)
+					return
+				}
+				out := filepath.Join(tmp, "ocd-smoke-alarm")
+				var stderr bytes.Buffer
+				cmd := exec.Command("go", "build", "-o", out, "./cmd/ocd-smoke-alarm")
+				cmd.Dir = root
+				cmd.Stderr = &stderr
+				if buildErr := cmd.Run(); buildErr != nil {
+					buildSmokeAlarmErr = fmt.Errorf("go build: %w\n%s", buildErr, stderr.String())
+					return
+				}
+				smokeAlarmBinary = out
+				return
+			}
+		}
+		// Source not present (e.g. CI) — fall back to binary already in PATH.
+		p, lookErr := exec.LookPath("ocd-smoke-alarm")
+		if lookErr != nil {
+			buildSmokeAlarmErr = fmt.Errorf("ocd-smoke-alarm not found in source tree or PATH: %w", lookErr)
 			return
 		}
-		var stderr bytes.Buffer
-		cmd := exec.Command("go", "build", "-o", out, "./cmd/ocd-smoke-alarm")
-		cmd.Dir = root
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			buildSmokeAlarmErr = fmt.Errorf("go build: %w\n%s", err, stderr.String())
-			return
-		}
-		smokeAlarmBinary = out
+		smokeAlarmBinary = p
 	})
 	if buildSmokeAlarmErr != nil {
-		t.Fatalf("build ocd-smoke-alarm: %v", buildSmokeAlarmErr)
+		t.Skipf("skipping: ocd-smoke-alarm unavailable: %v", buildSmokeAlarmErr)
 	}
 	return smokeAlarmBinary
 }
