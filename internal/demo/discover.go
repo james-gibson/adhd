@@ -36,32 +36,77 @@ type ClusterInfo struct {
 	AdhdMCP string `json:"adhd_mcp"`
 }
 
-// Browse browses the LAN for a lezz demo registry via mDNS and returns all
-// registered clusters. Returns an error if nothing is found within timeout.
+// Browse browses the LAN for a lezz demo registry and returns all registered
+// clusters. It races two strategies:
+//  1. mDNS browse for _lezz-demo._tcp — works when multicast is reliable.
+//  2. Direct HTTP poll of localhost:DiscoveryPort/cluster — works when lezz
+//     demo is on the same machine but mDNS is unavailable or slow.
+//
+// Returns an error if neither finds anything within timeout.
 func Browse(ctx context.Context, timeout time.Duration) ([]ClusterInfo, error) {
-	browser := discovery.NewBrowser()
-
 	browseCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	ch, err := browser.Browse(browseCtx, MDNSService)
-	if err != nil {
-		return nil, fmt.Errorf("mDNS browse for lezz demo: %w", err)
+	type result struct {
+		clusters []ClusterInfo
+		err      error
 	}
+	ch := make(chan result, 2)
 
-	select {
-	case instance, ok := <-ch:
-		if !ok {
-			return nil, fmt.Errorf("mDNS browse closed before finding a lezz demo")
+	// Strategy 1: mDNS.
+	go func() {
+		browser := discovery.NewBrowser()
+		mdnsCh, err := browser.Browse(browseCtx, MDNSService)
+		if err != nil {
+			ch <- result{err: fmt.Errorf("mDNS browse: %w", err)}
+			return
 		}
-		host := instance.Addr
-		if host == "" {
-			host = instance.Hostname
+		select {
+		case instance, ok := <-mdnsCh:
+			if !ok {
+				ch <- result{err: fmt.Errorf("mDNS browse closed before finding a lezz demo")}
+				return
+			}
+			host := instance.Addr
+			if host == "" {
+				host = instance.Hostname
+			}
+			clusters, err := fetchRegistry(browseCtx, fmt.Sprintf("http://%s:%d/cluster", host, DiscoveryPort))
+			ch <- result{clusters: clusters, err: err}
+		case <-browseCtx.Done():
+			ch <- result{err: browseCtx.Err()}
 		}
-		return fetchRegistry(ctx, fmt.Sprintf("http://%s:%d/cluster", host, DiscoveryPort))
-	case <-browseCtx.Done():
-		return nil, fmt.Errorf("no lezz demo found on the LAN within %s — is lezz demo running?", timeout)
+	}()
+
+	// Strategy 2: direct localhost HTTP poll (same machine, mDNS may be unreliable).
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-browseCtx.Done():
+				ch <- result{err: browseCtx.Err()}
+				return
+			case <-ticker.C:
+				clusters, err := fetchRegistry(browseCtx, fmt.Sprintf("http://127.0.0.1:%d/cluster", DiscoveryPort))
+				if err == nil && len(clusters) > 0 {
+					ch <- result{clusters: clusters}
+					return
+				}
+			}
+		}
+	}()
+
+	// Return whichever strategy wins; ignore errors unless both fail.
+	var lastErr error
+	for range 2 {
+		r := <-ch
+		if r.err == nil {
+			return r.clusters, nil
+		}
+		lastErr = r.err
 	}
+	return nil, fmt.Errorf("no lezz demo found on the LAN within %s — is lezz demo running? (%w)", timeout, lastErr)
 }
 
 // ConfigFromClusters builds a *config.Config whose SmokeAlarm endpoints are
