@@ -16,6 +16,7 @@ import (
 	"github.com/james-gibson/adhd/internal/lights"
 	"github.com/james-gibson/adhd/internal/mcpserver"
 	"github.com/james-gibson/adhd/internal/smokelink"
+	"github.com/james-gibson/isotope"
 )
 
 // Server runs ADHD in headless mode, logging all MCP traffic as JSONL
@@ -30,7 +31,7 @@ type Server struct {
 	role         IsotopeRole
 	primeAddr    string
 	trustLevel   int
-	zeroconfSrv  interface{ Shutdown() } // *zeroconf.Server; interface avoids import in this file
+	zeroconfSrv  isotope.Server
 	mu           sync.Mutex
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -385,7 +386,7 @@ func (s *Server) RegisterAsIsotope(smokeAlarmURL string) error {
 		}
 	}
 
-	rung, err := RegisterIsotopeWithRole(smokeAlarmURL, role, s.cfg.MCPServer.Addr)
+	rung, err := RegisterIsotopeWithRole(context.Background(), smokeAlarmURL, role, s.cfg.MCPServer.Addr)
 	if err != nil {
 		return err
 	}
@@ -394,7 +395,7 @@ func (s *Server) RegisterAsIsotope(smokeAlarmURL string) error {
 	s.mu.Unlock()
 
 	// Advertise via mDNS so other nodes on the LAN can discover this isotope
-	if zSrv, mdnsErr := AdvertiseIsotope(s.cfg.MCPServer.Addr, string(role), rung); mdnsErr != nil {
+	if zSrv, mdnsErr := isotope.Advertise("adhd", "_adhd-isotope._tcp", s.cfg.MCPServer.Addr, string(role), rung); mdnsErr != nil {
 		slog.Warn("isotope mDNS advertisement failed", "error", mdnsErr)
 	} else {
 		s.mu.Lock()

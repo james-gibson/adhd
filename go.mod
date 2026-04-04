@@ -6,6 +6,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/grandcat/zeroconf v1.0.0
+	github.com/james-gibson/isotope v0.0.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -34,3 +35,5 @@ require (
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 )
+
+replace github.com/james-gibson/isotope => /Users/james/src/prototypes/isotope

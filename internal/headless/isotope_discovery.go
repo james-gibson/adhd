@@ -1,16 +1,14 @@
 package headless
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"strings"
 	"time"
 
 	"github.com/james-gibson/adhd/internal/mcpclient"
+	"github.com/james-gibson/isotope"
 )
 
 // IsotopeRole describes the role of an ADHD instance in the topology
@@ -145,53 +143,17 @@ func AutoDiscoverPrime(ctx context.Context, smokeAlarmURL string) (string, error
 	return "", fmt.Errorf("no prime instance found in discovered isotopes")
 }
 
-// IsotopeRecord mirrors the record returned by smoke-alarm's /isotope/register endpoint.
-type IsotopeRecord struct {
-	Name         string    `json:"name"`
-	Role         string    `json:"role"`
-	Endpoint     string    `json:"endpoint"`
-	Protocol     string    `json:"protocol"`
-	TrustRung    int       `json:"trust_rung"`
-	RungName     string    `json:"rung_name"`
-	RegisteredAt time.Time `json:"registered_at"`
-}
-
 // RegisterIsotopeWithRole registers this instance via smoke-alarm's REST /isotope/register
 // endpoint and returns the assigned trust rung (0 if registration fails).
-func RegisterIsotopeWithRole(smokeAlarmURL string, role IsotopeRole, localAddr string) (int, error) {
-	registration := map[string]interface{}{
-		"name":     "adhd",
-		"role":     string(role),
-		"endpoint": localAddr,
-		"protocol": "mcp",
-	}
-
-	body, err := json.Marshal(registration)
-	if err != nil {
-		return 0, fmt.Errorf("failed to marshal registration: %w", err)
-	}
-
-	registerURL := strings.TrimRight(smokeAlarmURL, "/") + "/isotope/register"
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest(http.MethodPost, registerURL, bytes.NewReader(body))
-	if err != nil {
-		return 0, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
+func RegisterIsotopeWithRole(ctx context.Context, smokeAlarmURL string, role IsotopeRole, localAddr string) (int, error) {
+	record, err := isotope.NewClient(smokeAlarmURL).Register(ctx, isotope.IsotopeRegistration{
+		Name:     "adhd",
+		Role:     string(role),
+		Endpoint: localAddr,
+		Protocol: "mcp",
+	})
 	if err != nil {
 		return 0, fmt.Errorf("registration failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("registration returned status %d", resp.StatusCode)
-	}
-
-	var record IsotopeRecord
-	if err := json.NewDecoder(resp.Body).Decode(&record); err != nil {
-		return 0, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	slog.Info("registered as isotope",
