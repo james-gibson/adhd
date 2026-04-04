@@ -1,0 +1,45 @@
+# ADHD Self-Referential Demo Config
+# This config makes ADHD probe ITSELF, generating actual MCP traffic
+# Perfect for testing and demonstrations
+
+mcp_server:
+  enabled: true
+  addr: ":9090"  # ADHD's own MCP server
+
+# Health Monitoring
+health:
+  remote_smoke_alarm: ""
+
+# Monitor ADHD's own MCP endpoint
+# This generates real MCP traffic you can see in the logs
+features:
+  binaries:
+    # ADHD probes itself - generates actual traffic
+    - name: adhd-self
+      endpoint: "http://localhost:9090/mcp"  # Points to ADHD's own MCP endpoint
+      features:
+        - name: "dashboard-health"
+          gherkin_file: "features/adhd.feature"
+          gherkin_feature: "Feature: Dashboard Health"
+        - name: "light-status"
+          gherkin_file: "features/adhd.feature"
+          gherkin_feature: "Feature: Light Status"
+        - name: "mcp-compliance"
+          gherkin_file: "features/adhd.feature"
+          gherkin_feature: "Feature: MCP Compliance"
+      interval: 5s
+      timeout: 2s
+
+# This config generates MCP traffic because:
+# 1. ADHD starts MCP server on :9090
+# 2. ADHD probes http://localhost:9090 (itself)
+# 3. Every probe generates MCP messages (initialize, tools/list, etc.)
+# 4. All traffic logged to JSONL
+#
+# Usage:
+#   Terminal 1: ./bin/adhd --config ./adhd-demo-self.yaml
+#   Terminal 2: ./bin/adhd --headless --config ./adhd-demo-self.yaml --mcp-addr :0 \
+#               --log /tmp/adhd.jsonl --prime-plus --prime-addr http://localhost:9090/mcp
+#   Terminal 3: tail -f /tmp/adhd.jsonl | jq -c '{type, method}'
+#
+# Result: You'll see actual MCP traffic (initialize, tools/list, adhd.status, etc.)

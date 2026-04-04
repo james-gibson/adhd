@@ -1,0 +1,71 @@
+# ADHD Configuration
+# Alarm Dashboard Health Monitor
+
+# MCP Server: expose dashboard lights as an MCP endpoint
+# Other agents can query light status via JSON-RPC
+mcp_server:
+  enabled: true
+  addr: ":9090"
+  # Optional separate SSE address (not yet implemented)
+  # sse_addr: ":9091"
+
+# Smoke-Alarm Endpoints: monitor one or more ocd-smoke-alarm instances
+# ADHD will poll their /status endpoint and subscribe to SSE for real-time updates
+smoke_alarm:
+  # Example: local smoke-alarm instance
+  - name: "primary"
+    endpoint: "http://localhost:8080"
+    interval: 10s  # polling interval
+    use_sse: true  # subscribe to SSE stream for real-time updates
+
+  # Example: remote smoke-alarm instance
+  # - name: "remote"
+  #   endpoint: "http://smoke-alarm.example.com"
+  #   interval: 30s
+  #   use_sse: false
+
+# MCP Targets: direct probes of MCP tools (optional)
+# ADHD will probe these directly and display their health
+mcp_targets:
+  # Example: probe an MCP server directly
+  # - name: "demo-mcp"
+  #   endpoint: "http://localhost:3000/mcp"
+  #   tools: []  # empty = all tools, or specify ["tool1", "tool2"]
+  #   interval: 30s
+  #   timeout: 5s
+
+# Feature Discovery: paths to scan for Gherkin feature files
+# Each feature becomes a light on the dashboard
+features:
+  search_paths:
+    - "features/adhd/"
+    - "../ocd-smoke-alarm/features/"
+    - "../fire-marshal/features/"
+
+# Example config for a distributed setup:
+#
+# mcp_server:
+#   enabled: true
+#   addr: ":9090"
+#
+# smoke_alarm:
+#   - name: "us-west"
+#     endpoint: "http://smoke-alarm-west.example.com"
+#     interval: 10s
+#     use_sse: true
+#
+#   - name: "us-east"
+#     endpoint: "http://smoke-alarm-east.example.com"
+#     interval: 10s
+#     use_sse: true
+#
+# mcp_targets:
+#   - name: "critical-tool-1"
+#     endpoint: "http://tools.example.com/mcp"
+#     tools: ["tool-a", "tool-b"]
+#     interval: 20s
+#     timeout: 5s
+#
+# features:
+#   search_paths:
+#     - "features/adhd/"

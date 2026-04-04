@@ -1,0 +1,72 @@
+# ADHD Configuration Example
+# Central observatory for MCP/ACP health monitoring with Gherkin traceability
+
+# MCP Server: ADHD exposes an MCP endpoint for fire-marshal and other tools
+# Change port if running multiple ADHD instances or if port is in use
+mcp_server:
+  enabled: true
+  addr: ":9090"  # Change to ":9091", ":9092" etc. if port is in use
+
+# Health Monitoring: Local probes + remote smoke-alarm comparison
+health:
+  # Optional: Compare local probes against a remote smoke-alarm instance
+  # If not set, lights show only local health (green/red)
+  # If set, lights show consensus (green/red/yellow for mismatch)
+  remote_smoke_alarm: "http://smoke-alarm:8080"
+
+# Binary Endpoints: Services to monitor
+# Each binary declares which Gherkin features it satisfies
+# ADHD probes each endpoint and traces failures back to specs
+#
+# Note: Relative paths are resolved relative to this config file's directory
+features:
+  binaries:
+    # Example 1: Service with explicit feature list
+    - name: api-service
+      endpoint: "http://localhost:9001"
+      features:
+        - name: "authentication"
+          gherkin_file: "features/api-service.feature"
+          gherkin_feature: "Feature: API Authentication"
+        - name: "rate-limiting"
+          gherkin_file: "features/api-service.feature"
+          gherkin_feature: "Feature: Rate Limiting"
+      interval: 5s
+      timeout: 2s
+
+    # Example 2: Smoke-alarm with pickled-onions features (glob pattern loads all .feature files)
+    - name: smoke-alarm
+      endpoint: "http://smoke-alarm:8080"
+      gherkin_files:
+        - ../pickled-onions/features/ocd-smoke-alarm/*.feature
+      interval: 10s
+      timeout: 3s
+
+    # Example 3: Fire-marshal with pickled-onions features
+    - name: fire-marshal
+      endpoint: "http://fire-marshal:9091"
+      gherkin_files:
+        - ../pickled-onions/features/fire-marshal/*.feature
+      interval: 30s
+      timeout: 5s
+
+# Light Status Semantics:
+# 🟢 GREEN = endpoint reachable AND local healthy AND remote healthy (if configured)
+# 🔴 RED = endpoint unreachable OR both local and remote agree it's unhealthy
+# 🟡 YELLOW = local and remote disagree (configuration mismatch/drift)
+#
+# All failures trace back to Gherkin specifications via:
+#   Spec: features/service-name.feature
+#
+# This enables:
+# 1. Observable system health (colors)
+# 2. Root cause analysis (which service failed)
+# 3. Specification compliance (what should it do)
+# 4. Configuration validation (local vs remote agreement)
+
+# Headless Mode (JSONL logging, no TUI):
+#   adhd ./bin/adhd --config ./adhd-example.yaml --headless
+#   adhd ./bin/adhd --config ./adhd-example.yaml --headless --log /tmp/adhd-traffic.jsonl
+#   adhd ./bin/adhd --config ./adhd-example.yaml --headless --smoke-alarm http://smoke-alarm:8080
+#
+# Output: All MCP traffic as JSONL (JSON Lines) for streaming/analysis
