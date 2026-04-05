@@ -258,9 +258,16 @@ func (e *Executor) addAuth(req *http.Request, auth AuthConfig) error {
 		}
 		headerName := auth.Header
 		if headerName == "" {
-			headerName = "X-API-Key" // default
+			headerName = "X-API-Key" // default header name
+		}
+		// Validate header name format (should be ASCII alphanumeric and hyphens)
+		if !isValidHeaderName(headerName) {
+			return fmt.Errorf("invalid header name: %s", headerName)
 		}
 		req.Header.Set(headerName, auth.Token)
+		slog.Debug("api-key header added",
+			"header_name", headerName,
+		)
 
 	case "oauth2":
 		// OAuth2 token (similar to bearer for now)
@@ -279,6 +286,39 @@ func (e *Executor) addAuth(req *http.Request, auth AuthConfig) error {
 	}
 
 	return nil
+}
+
+// Helper functions for authentication
+
+// isValidHeaderName validates that a header name follows HTTP spec (ASCII alphanumeric + hyphens)
+func isValidHeaderName(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	for _, ch := range name {
+		// HTTP headers must be ASCII, alphanumeric, or hyphen
+		if !((ch >= 'a' && ch <= 'z') ||
+			(ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') ||
+			ch == '-' ||
+			ch == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// CommonAPIKeyHeaders contains common header names used by different services
+var CommonAPIKeyHeaders = []string{
+	"X-API-Key",
+	"API-Key",
+	"x-api-key",
+	"X-Auth-Token",
+	"Authorization",
+	"X-Token",
+	"api_key",
+	"apikey",
+	"access_token",
 }
 
 // Helper functions for logging
