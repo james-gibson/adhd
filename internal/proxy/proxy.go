@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -110,6 +111,11 @@ func (e *Executor) ExecuteProxy(ctx context.Context, req ProxyRequest) (*ProxyRe
 	// Add authentication if provided
 	if req.Auth != nil {
 		if err := e.addAuth(httpReq, *req.Auth); err != nil {
+			slog.Error("failed to add authentication",
+				"type", req.Auth.Type,
+				"target", req.TargetEndpoint,
+				"error", err.Error(),
+			)
 			return &ProxyResponse{
 				Error: &ProxyError{
 					Code:    -32603,
@@ -118,9 +124,18 @@ func (e *Executor) ExecuteProxy(ctx context.Context, req ProxyRequest) (*ProxyRe
 				},
 			}, nil
 		}
+		slog.Debug("authentication added for proxy call",
+			"auth_type", req.Auth.Type,
+			"target", req.TargetEndpoint,
+		)
 	}
 
 	// Execute the proxied request
+	slog.Debug("forwarding MCP call via proxy",
+		"target", req.TargetEndpoint,
+		"method", callMethod(req.Call),
+		"has_auth", req.Auth != nil,
+	)
 	resp, err := e.httpClient.Do(httpReq)
 	if err != nil {
 		return &ProxyResponse{
@@ -145,12 +160,25 @@ func (e *Executor) ExecuteProxy(ctx context.Context, req ProxyRequest) (*ProxyRe
 		}, nil
 	}
 
-	// If response is not 200, include HTTP status in error
+	// Log response status
+	slog.Debug("proxy call completed",
+		"target", req.TargetEndpoint,
+		"status_code", resp.StatusCode,
+	)
+
+	// If response is not 200, categorize the error
 	if resp.StatusCode != http.StatusOK {
+		errCode, errMsg := categorizeHTTPError(resp.StatusCode, req.Auth)
+		slog.Warn("proxy call failed",
+			"target", req.TargetEndpoint,
+			"status_code", resp.StatusCode,
+			"auth_type", authType(req.Auth),
+			"error_code", errCode,
+		)
 		return &ProxyResponse{
 			Error: &ProxyError{
-				Code:    -32603,
-				Message: fmt.Sprintf("Target returned HTTP %d", resp.StatusCode),
+				Code:    errCode,
+				Message: errMsg,
 				Details: string(respBody),
 			},
 		}, nil
@@ -169,6 +197,48 @@ func (e *Executor) ExecuteProxy(ctx context.Context, req ProxyRequest) (*ProxyRe
 	return &ProxyResponse{
 		Result: jsonRPCResp,
 	}, nil
+}
+
+// categorizeHTTPError maps HTTP status codes to meaningful error messages
+// Returns (code, message) for JSON-RPC error response
+func categorizeHTTPError(statusCode int, auth *AuthConfig) (int, string) {
+	switch statusCode {
+	case http.StatusUnauthorized: // 401
+		if auth != nil {
+			switch auth.Type {
+			case "bearer":
+				return -32002, "Unauthorized: Bearer token rejected by target (invalid, expired, or wrong scope)"
+			case "api-key":
+				return -32002, "Unauthorized: API key rejected by target (invalid or insufficient permissions)"
+			case "oauth2":
+				return -32002, "Unauthorized: OAuth2 token rejected by target (expired or invalid scope)"
+			default:
+				return -32002, "Unauthorized: Authentication failed (HTTP 401)"
+			}
+		}
+		return -32002, "Unauthorized: Target requires authentication (HTTP 401)"
+
+	case http.StatusForbidden: // 403
+		return -32003, "Forbidden: Access denied by target (may require additional scopes or permissions)"
+
+	case http.StatusNotFound: // 404
+		return -32004, "Not Found: Target endpoint not found (HTTP 404) - check URL"
+
+	case http.StatusBadRequest: // 400
+		return -32005, "Bad Request: Target rejected the call format (HTTP 400)"
+
+	case http.StatusInternalServerError: // 500
+		return -32006, "Target Internal Error: Server error on target endpoint (HTTP 500)"
+
+	case http.StatusServiceUnavailable: // 503
+		return -32007, "Service Unavailable: Target endpoint temporarily unavailable (HTTP 503)"
+
+	case http.StatusTooManyRequests: // 429
+		return -32008, "Too Many Requests: Rate limit exceeded on target (HTTP 429)"
+
+	default:
+		return -32603, fmt.Sprintf("Target error: HTTP %d", statusCode)
+	}
 }
 
 // addAuth adds authentication headers to the request based on auth config
@@ -209,4 +279,25 @@ func (e *Executor) addAuth(req *http.Request, auth AuthConfig) error {
 	}
 
 	return nil
+}
+
+// Helper functions for logging
+
+// authType returns the auth type as a string, or "none" if not provided
+func authType(auth *AuthConfig) string {
+	if auth == nil {
+		return "none"
+	}
+	if auth.Type == "" {
+		return "unknown"
+	}
+	return auth.Type
+}
+
+// callMethod extracts the method name from a JSON-RPC call
+func callMethod(call map[string]interface{}) string {
+	if method, ok := call["method"].(string); ok {
+		return method
+	}
+	return "unknown"
 }
