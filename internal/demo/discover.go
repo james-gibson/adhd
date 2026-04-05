@@ -28,13 +28,21 @@ const (
 	defaultInterval = 10 * time.Second
 )
 
+// ProjectEntry describes a project within a cluster that exposes an MCP server.
+type ProjectEntry struct {
+	Name   string `json:"name"`    // short name, e.g. "tuner", "adhd"
+	Repo   string `json:"repo"`    // GitHub slug, e.g. "james-gibson/tuner"
+	MCPURL string `json:"mcp_url"` // base URL of the project's MCP server
+}
+
 // ClusterInfo mirrors the JSON published by lezz demo's /cluster endpoint.
 type ClusterInfo struct {
-	Name        string   `json:"name"`
-	AlarmA      string   `json:"alarm_a"`
-	AlarmB      string   `json:"alarm_b"`
-	AdhdMCP     string   `json:"adhd_mcp"`
-	GithubRepos []string `json:"github_repos,omitempty"`
+	Name        string         `json:"name"`
+	AlarmA      string         `json:"alarm_a"`
+	AlarmB      string         `json:"alarm_b"`
+	AdhdMCP     string         `json:"adhd_mcp"`
+	GithubRepos []string       `json:"github_repos,omitempty"`
+	Projects    []ProjectEntry `json:"projects,omitempty"`
 }
 
 // Browse browses the LAN for a lezz demo registry and returns all registered

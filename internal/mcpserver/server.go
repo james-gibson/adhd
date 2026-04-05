@@ -740,8 +740,28 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 		}
 	}
 
-	slog.Info("adhd.cluster.join accepted", "name", p["name"], "alarm_a", alarmA, "alarm_b", alarmB, "repos", repoCount)
-	return map[string]interface{}{"accepted": true, "name": p["name"], "repos_registered": repoCount}, nil
+	// Register per-project MCP proxy tools for projects that expose an MCP server.
+	var projectCount int
+	if projRaw, ok := m["projects"]; ok {
+		if projSlice, ok := projRaw.([]interface{}); ok {
+			for _, pj := range projSlice {
+				pjMap, ok := pj.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				pjName, _ := pjMap["name"].(string)
+				pjRepo, _ := pjMap["repo"].(string)
+				pjMCP, _ := pjMap["mcp_url"].(string)
+				if pjName != "" && pjMCP != "" {
+					s.registerProjectTool(p["name"], pjName, pjRepo, pjMCP)
+					projectCount++
+				}
+			}
+		}
+	}
+
+	slog.Info("adhd.cluster.join accepted", "name", p["name"], "alarm_a", alarmA, "alarm_b", alarmB, "repos", repoCount, "projects", projectCount)
+	return map[string]interface{}{"accepted": true, "name": p["name"], "repos_registered": repoCount, "projects_registered": projectCount}, nil
 }
 
 // handleHurlRun executes a hurl script and returns pass/fail with output.
@@ -961,6 +981,65 @@ func (s *Server) registerRepoTool(clusterName, slug string) {
 		},
 	})
 	slog.Info("registered per-repo tool", "tool", toolName, "cluster", clusterName)
+}
+
+// registerProjectTool registers an adhd.project.<name>.call dynamic tool that
+// proxies arbitrary JSON-RPC calls to the project's own MCP server.
+// Duplicate registrations (same tool name) are silently ignored.
+func (s *Server) registerProjectTool(clusterName, projectName, repo, mcpURL string) {
+	toolName := "adhd.project." + projectName + ".call"
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.dynamicTools {
+		if t.name == toolName {
+			return
+		}
+	}
+	capturedURL := mcpURL
+	capturedProject := projectName
+	desc := fmt.Sprintf("Proxy JSON-RPC call to the %s MCP server (cluster: %s)", projectName, clusterName)
+	if repo != "" {
+		desc = fmt.Sprintf("Proxy JSON-RPC call to the %s MCP server — %s (cluster: %s)", projectName, repo, clusterName)
+	}
+	s.dynamicTools = append(s.dynamicTools, &dynamicTool{
+		name:        toolName,
+		description: desc,
+		inputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"method": map[string]interface{}{
+					"type":        "string",
+					"description": fmt.Sprintf("MCP method to call on the %s server (e.g. tools/list)", capturedProject),
+				},
+				"params": map[string]interface{}{
+					"type":        "object",
+					"description": "Optional parameters for the method",
+				},
+			},
+			"required": []string{"method"},
+		},
+		handler: func(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
+			m, ok := params.(map[string]interface{})
+			if !ok {
+				return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
+			}
+			method, _ := m["method"].(string)
+			if method == "" {
+				return nil, &jsonrpcError{Code: -32602, Message: "method is required"}
+			}
+			var callParams interface{}
+			if p, ok := m["params"]; ok {
+				callParams = p
+			}
+			result, err := s.callPeerMCP(ctx, capturedURL, method, callParams)
+			if err != nil {
+				return nil, &jsonrpcError{Code: -32000, Message: err.Error()}
+			}
+			return result, nil
+		},
+	})
+	slog.Info("registered per-project proxy tool", "tool", toolName, "mcp_url", mcpURL, "cluster", clusterName)
 }
 
 // callPeerMCP sends a single JSON-RPC call to a peer MCP server and returns
