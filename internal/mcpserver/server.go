@@ -20,6 +20,7 @@ import (
 
 	"github.com/james-gibson/adhd/internal/config"
 	"github.com/james-gibson/adhd/internal/lights"
+	"github.com/james-gibson/adhd/internal/proxy"
 )
 
 // TopologyProvider is a function that returns current topology info
@@ -95,6 +96,7 @@ type Server struct {
 	middleware         func(http.Handler) http.Handler
 	server             *http.Server
 	httpClient         *http.Client
+	proxyExecutor      *proxy.Executor
 
 	// Rung validation identity fields — set via SetInstanceIdentity.
 	instanceIsotope string
@@ -122,6 +124,7 @@ func NewServer(cfg config.MCPServerConfig, cluster *lights.Cluster) *Server {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		proxyExecutor:   proxy.NewExecutor(),
 		clusterPeers:    make(map[string]*clusterPeerInfo),
 		negotiatedPaths: make(map[string][]*NegotiatedPath),
 	}
@@ -650,6 +653,59 @@ func (s *Server) handleToolsList() interface{} {
 				},
 			},
 		},
+		{
+			"name":        "adhd.proxy",
+			"description": "Proxy an MCP call to a target endpoint with optional authentication (bearer token, API key, OAuth2).",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"target_endpoint": map[string]interface{}{
+						"type":        "string",
+						"description": "Target MCP endpoint URL (e.g., https://api.example.com/mcp)",
+					},
+					"auth": map[string]interface{}{
+						"type":        "object",
+						"description": "Optional authentication configuration",
+						"properties": map[string]interface{}{
+							"type": map[string]interface{}{
+								"type":        "string",
+								"description": "Auth type: bearer, api-key, or oauth2",
+								"enum":        []string{"bearer", "api-key", "oauth2"},
+							},
+							"token": map[string]interface{}{
+								"type":        "string",
+								"description": "Bearer token, API key, or OAuth2 token",
+							},
+							"header": map[string]interface{}{
+								"type":        "string",
+								"description": "Custom header name for api-key type (defaults to X-API-Key)",
+							},
+						},
+						"required": []string{"type", "token"},
+					},
+					"call": map[string]interface{}{
+						"type":        "object",
+						"description": "The MCP JSON-RPC call to forward to the target endpoint",
+						"properties": map[string]interface{}{
+							"jsonrpc": map[string]interface{}{
+								"type":        "string",
+								"description": "JSON-RPC version (defaults to 2.0)",
+							},
+							"method": map[string]interface{}{
+								"type":        "string",
+								"description": "Method name (e.g., tools/list, adhd.status)",
+							},
+							"params": map[string]interface{}{
+								"type":        "object",
+								"description": "Method parameters (optional)",
+							},
+						},
+						"required": []string{"method"},
+					},
+				},
+				"required": []string{"target_endpoint", "call"},
+			},
+		},
 	}
 
 	s.mu.RLock()
@@ -722,6 +778,8 @@ func (s *Server) handleToolsCall(ctx context.Context, params interface{}) (inter
 		result, errResult = s.handlePathVerify(ctx, toolInput)
 	case "adhd.path.list":
 		result, errResult = s.handlePathList(toolInput)
+	case "adhd.proxy":
+		result, errResult = s.handleProxyCall(ctx, toolInput)
 	default:
 		// Check dynamic tools
 		s.mu.RLock()
@@ -1869,6 +1927,63 @@ func (s *Server) respondError(w http.ResponseWriter, code int, message string) {
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		slog.Warn("encode response", "error", err)
 	}
+}
+
+// handleProxyCall proxies an MCP call to a target endpoint with optional authentication
+func (s *Server) handleProxyCall(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
+	paramsMap, ok := params.(map[string]interface{})
+	if !ok {
+		return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
+	}
+
+	// Parse the proxy request
+	var proxyReq proxy.ProxyRequest
+
+	// Extract target_endpoint
+	if endpoint, ok := paramsMap["target_endpoint"].(string); ok {
+		proxyReq.TargetEndpoint = endpoint
+	} else {
+		return nil, &jsonrpcError{Code: -32602, Message: "target_endpoint is required and must be a string"}
+	}
+
+	// Extract auth config if provided
+	if authObj, ok := paramsMap["auth"].(map[string]interface{}); ok {
+		authCfg := &proxy.AuthConfig{}
+		if authType, ok := authObj["type"].(string); ok {
+			authCfg.Type = authType
+		}
+		if token, ok := authObj["token"].(string); ok {
+			authCfg.Token = token
+		}
+		if header, ok := authObj["header"].(string); ok {
+			authCfg.Header = header
+		}
+		proxyReq.Auth = authCfg
+	}
+
+	// Extract the MCP call to forward
+	if call, ok := paramsMap["call"].(map[string]interface{}); ok {
+		proxyReq.Call = call
+	} else {
+		return nil, &jsonrpcError{Code: -32602, Message: "call is required and must be an object"}
+	}
+
+	// Execute the proxy
+	resp, err := s.proxyExecutor.ExecuteProxy(ctx, proxyReq)
+	if err != nil {
+		return nil, &jsonrpcError{Code: -32603, Message: "Proxy execution failed: " + err.Error()}
+	}
+
+	// If response has an error, return it
+	if resp.Error != nil {
+		msg := resp.Error.Message
+		if resp.Error.Details != "" {
+			msg += ": " + resp.Error.Details
+		}
+		return nil, &jsonrpcError{Code: resp.Error.Code, Message: msg}
+	}
+
+	return resp.Result, nil
 }
 
 // JSON-RPC types
