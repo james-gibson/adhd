@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -196,9 +197,58 @@ func (s *Server) Start(logPath string) error {
 	// Wire cluster-join handler so lezz demo can push new endpoints via MCP.
 	if s.mcpServer != nil {
 		s.mcpServer.SetClusterJoinHandler(s.handleClusterJoin)
+		s.mcpServer.SetSecurityAlertHandler(s.reportSecurityAlert)
 	}
 
 	return nil
+}
+
+// reportSecurityAlert pushes a security event to all configured smoke-alarm instances
+// via their /federation/report endpoint, surfacing it as a degraded component.
+func (s *Server) reportSecurityAlert(level, event string, details map[string]interface{}) {
+	if len(s.cfg.SmokeAlarm) == 0 {
+		return
+	}
+
+	component := map[string]interface{}{
+		"name":       "security/" + event,
+		"healthy":    false,
+		"detail":     fmt.Sprintf("level=%s %v", level, details),
+		"updated_at": time.Now().UTC(),
+	}
+	payload := map[string]interface{}{
+		"service": "adhd",
+		"live":    true,
+		"ready":   true,
+		"now":     time.Now().UTC(),
+		"components": []interface{}{component},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, ep := range s.cfg.SmokeAlarm {
+		base := strings.TrimSuffix(ep.Endpoint, "/")
+		url := base + "/federation/report"
+		req, err := http.NewRequestWithContext(s.ctx, http.MethodPost, url, bytes.NewReader(data))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			slog.Debug("security alert: federation report failed", "url", url, "error", err)
+			continue
+		}
+		_ = resp.Body.Close()
+		slog.Info("security alert reported to smoke-alarm",
+			"event", event,
+			"level", level,
+			"smoke_alarm", url,
+		)
+	}
 }
 
 // drainWatcherUpdates consumes LightUpdate events from the smokelink watcher,

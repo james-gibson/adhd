@@ -38,6 +38,11 @@ type ReceiptVerifier func(receipt, featureID, nonce string) bool
 // the new cluster's smoke-alarm endpoints into the running watcher.
 type ClusterJoinHandler func(name, alarmA, alarmB string) error
 
+// SecurityAlertHandler is called when a security event occurs (honeypot trigger,
+// rung challenge failure). level is "warn" or "critical", event is a short tag,
+// details carries context for the smoke-alarm federation report.
+type SecurityAlertHandler func(level, event string, details map[string]interface{})
+
 // callerIPKey is a context key for the HTTP caller's remote address.
 type callerIPKey struct{}
 
@@ -96,6 +101,8 @@ type Server struct {
 	receiptComputer ReceiptComputer
 	receiptVerifier ReceiptVerifier
 
+	securityAlertHandler SecurityAlertHandler
+
 	// Dynamic per-repo tools registered on cluster join.
 	mu           sync.RWMutex
 	dynamicTools []*dynamicTool
@@ -142,6 +149,27 @@ func (s *Server) SetPushLogsHandler(h PushLogsHandler) {
 // SetClusterJoinHandler registers the handler called when adhd.cluster.join is received.
 func (s *Server) SetClusterJoinHandler(h ClusterJoinHandler) {
 	s.clusterJoinHandler = h
+}
+
+// SetSecurityAlertHandler registers a callback invoked on honeypot triggers and
+// rung challenge failures. Use it to forward events to the smoke-alarm.
+func (s *Server) SetSecurityAlertHandler(h SecurityAlertHandler) {
+	s.securityAlertHandler = h
+}
+
+// fireSecurity adds a red security light to the cluster and calls the handler.
+func (s *Server) fireSecurity(level, event string, details map[string]interface{}) {
+	// Surface as a red light so the local cluster/TUI shows it immediately.
+	s.cluster.Upsert(&lights.Light{
+		Name:    "security/" + event,
+		Type:    "security",
+		Source:  "honeypot",
+		Status:  lights.StatusRed,
+		Details: fmt.Sprintf("%v", details),
+	})
+	if s.securityAlertHandler != nil {
+		s.securityAlertHandler(level, event, details)
+	}
 }
 
 // SetMiddleware sets an HTTP middleware to wrap all requests (e.g., for traffic logging)
@@ -284,6 +312,10 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 					"caller_ip", callerIP,
 					"params", req.Params,
 				)
+				s.fireSecurity("warn", "honeypot_triggered", map[string]interface{}{
+					"tool":      req.Method,
+					"caller_ip": callerIP,
+				})
 				result = dynTool.fakeResult
 			} else {
 				result, respErr = dynTool.handler(r.Context(), req.Params)
@@ -1269,10 +1301,22 @@ func (s *Server) handlePathNegotiate(ctx context.Context, params interface{}) (i
 			})
 			if err != nil {
 				slog.Debug("path negotiate: direct challenge failed", "peer", peer.Name, "error", err)
+				s.fireSecurity("warn", "rung_challenge_failed", map[string]interface{}{
+					"peer":       peer.Name,
+					"endpoint":   peer.Endpoint,
+					"feature_id": featureID,
+					"error":      err.Error(),
+				})
 				continue
 			}
 			verified, _ := res["verified"].(bool)
 			if !verified {
+				s.fireSecurity("warn", "rung_challenge_failed", map[string]interface{}{
+					"peer":       peer.Name,
+					"endpoint":   peer.Endpoint,
+					"feature_id": featureID,
+					"reason":     "verified=false",
+				})
 				continue
 			}
 			receipt, _ := res["receipt"].(string)

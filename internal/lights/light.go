@@ -116,6 +116,20 @@ func (c *Cluster) GetByName(name string) *Light {
 	return nil
 }
 
+// Upsert adds a light if no light with that name exists, or updates the existing one in place.
+func (c *Cluster) Upsert(light *Light) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	light.LastUpdated = time.Now()
+	for i, l := range c.lights {
+		if l.Name == light.Name {
+			c.lights[i] = light
+			return
+		}
+	}
+	c.lights = append(c.lights, light)
+}
+
 // Count returns the number of lights
 func (c *Cluster) Count() int {
 	c.mu.RLock()
