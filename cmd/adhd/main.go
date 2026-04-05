@@ -14,6 +14,8 @@ import (
 	"github.com/james-gibson/adhd/internal/dashboard"
 	"github.com/james-gibson/adhd/internal/demo"
 	"github.com/james-gibson/adhd/internal/headless"
+	"github.com/james-gibson/adhd/internal/proxy"
+	"github.com/james-gibson/adhd/internal/smoketest"
 	"github.com/james-gibson/adhd/internal/telemetry"
 )
 
@@ -143,6 +145,48 @@ func main() {
 	} else {
 		// TUI mode: Bubble Tea dashboard
 		d := dashboard.NewBubbleTeaDashboard(cfg)
+
+		// Initialize scheduler if certified endpoints are configured
+		if len(cfg.CertifiedEndpoints) > 0 {
+			proxyExecutor := proxy.NewExecutor()
+			runner := smoketest.NewRunner(proxyExecutor)
+			scheduler := smoketest.NewScheduler(runner)
+
+			// Register endpoints from config
+			for _, ep := range cfg.CertifiedEndpoints {
+				// Get token from environment variable
+				token := os.Getenv(ep.TokenEnv)
+				if token == "" && ep.AuthType != "none" {
+					slog.Warn("certified endpoint token not found", "endpoint_id", ep.ID, "token_env", ep.TokenEnv)
+					continue
+				}
+
+				certEndpoint := &smoketest.CertifiedEndpoint{
+					ID:       ep.ID,
+					URL:      ep.URL,
+					AuthType: ep.AuthType,
+					Token:    token,
+					Header:   ep.Header,
+					TestFreq: ep.TestFreq,
+					CertLevel: 100,
+				}
+				scheduler.RegisterEndpoint(certEndpoint)
+				slog.Info("registered certified endpoint", "id", ep.ID, "url", ep.URL, "auth_type", ep.AuthType)
+			}
+
+			// Start scheduler
+			scheduler.Start(ctx)
+			d.SetScheduler(scheduler)
+
+			// Wire scheduler events to dashboard
+			go func() {
+				for event := range scheduler.EventsChannel() {
+					d.Send(dashboard.SmokeTestEventMsg{Event: event})
+				}
+			}()
+
+			slog.Info("smoke test scheduler started", "endpoints", len(cfg.CertifiedEndpoints))
+		}
 
 		// If the config was built from a lezz demo cluster discovery, mark the
 		// @domain-demo feature lights pre-verified so they go green at Init time,

@@ -250,6 +250,11 @@ func (m *BubbleTeaDashboard) Init() tea.Cmd {
 		cmds = append(cmds, waitForLightUpdate(m.lightUpdates))
 	}
 
+	// Start smoke test event listener if scheduler is configured
+	if m.scheduler != nil && m.testEvents != nil {
+		cmds = append(cmds, waitForSmokeTestEvent(m.testEvents))
+	}
+
 	// Fire immediate /healthz probes for all configured smoke-alarm endpoints.
 	// This certifies @domain-smoke-alarm-network without waiting for the first
 	// watcher poll cycle (which may be 10s away).
@@ -583,6 +588,12 @@ func (m *BubbleTeaDashboard) SetRegistryURL(registryURL string, initialNames []s
 	for _, n := range initialNames {
 		m.knownClusterNames[n] = true
 	}
+}
+
+// SetScheduler sets the smoke test scheduler and initializes the event channel
+func (m *BubbleTeaDashboard) SetScheduler(scheduler *smoketest.Scheduler) {
+	m.scheduler = scheduler
+	m.testEvents = make(chan smoketest.ScheduleEvent, 100)
 }
 
 // MarkPreVerified queues a CapabilityVerifiedMsg to be emitted at Init()

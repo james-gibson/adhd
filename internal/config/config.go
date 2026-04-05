@@ -10,11 +10,12 @@ import (
 
 // Config represents the complete ADHD configuration
 type Config struct {
-	MCPServer  MCPServerConfig      `yaml:"mcp_server"`
-	Health     HealthConfig         `yaml:"health"`
-	SmokeAlarm []SmokeAlarmEndpoint `yaml:"smoke_alarm"`
-	MCPTargets []MCPTarget          `yaml:"mcp_targets"`
-	Features   FeaturesConfig       `yaml:"features"`
+	MCPServer         MCPServerConfig       `yaml:"mcp_server"`
+	Health            HealthConfig          `yaml:"health"`
+	SmokeAlarm        []SmokeAlarmEndpoint  `yaml:"smoke_alarm"`
+	MCPTargets        []MCPTarget           `yaml:"mcp_targets"`
+	Features          FeaturesConfig        `yaml:"features"`
+	CertifiedEndpoints []CertifiedEndpoint  `yaml:"certified_endpoints"`
 }
 
 // HealthConfig configures health monitoring
@@ -67,6 +68,17 @@ type Feature struct {
 	Name         string `yaml:"name"`
 	GherkinFile  string `yaml:"gherkin_file"`   // path to .feature file
 	GherkinFeature string `yaml:"gherkin_feature"` // feature name in Gherkin
+}
+
+// CertifiedEndpoint represents an MCP endpoint that has been certified
+// and is monitored by the smoke test scheduler
+type CertifiedEndpoint struct {
+	ID       string        `yaml:"id"`        // unique identifier (e.g., "stripe-api")
+	URL      string        `yaml:"url"`       // MCP endpoint URL (e.g., "https://api.stripe.com/mcp")
+	AuthType string        `yaml:"auth_type"` // "bearer", "api-key", "oauth2", or "none"
+	TokenEnv string        `yaml:"token_env"` // environment variable name for token (e.g., "STRIPE_API_KEY")
+	Header   string        `yaml:"header,omitempty"` // custom header name for api-key type
+	TestFreq time.Duration `yaml:"test_freq"` // how often to test (default 5 minutes)
 }
 
 // Load reads and parses a YAML config file

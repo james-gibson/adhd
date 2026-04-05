@@ -1,0 +1,87 @@
+# ADHD Configuration Example
+# This example shows how to configure the smoke test scheduler for
+# continuous monitoring of certified MCP endpoints.
+
+mcp_server:
+  enabled: true
+  addr: ":9090"
+
+health:
+  remote_smoke_alarm: ""
+
+smoke_alarm: []
+
+features:
+  search_paths:
+    - features/adhd/
+
+# Certified endpoints are continuously tested by the smoke test scheduler
+# and their status is displayed on the dashboard in real-time.
+certified_endpoints:
+  # Example 1: Bearer token authenticated API
+  - id: stripe-api
+    url: https://api.stripe.com/mcp
+    auth_type: bearer
+    token_env: STRIPE_API_KEY      # Token loaded from environment variable
+    test_freq: 5m                  # Test every 5 minutes
+
+  # Example 2: API-Key authenticated API with custom header
+  - id: openai-api
+    url: https://api.openai.com/mcp
+    auth_type: api-key
+    token_env: OPENAI_API_KEY
+    header: x-api-key              # Custom header name
+    test_freq: 10m                 # Test every 10 minutes
+
+  # Example 3: Another bearer token service
+  - id: anthropic-api
+    url: https://api.anthropic.com/mcp
+    auth_type: bearer
+    token_env: ANTHROPIC_API_KEY
+    test_freq: 5m
+
+  # Example 4: OAuth2 service (initial support)
+  - id: github-api
+    url: https://api.github.com/mcp
+    auth_type: oauth2
+    token_env: GITHUB_TOKEN
+    test_freq: 15m                 # Test less frequently for rate limit safety
+
+  # Example 5: Public endpoint (no auth required)
+  - id: public-service
+    url: https://public.example.com/mcp
+    auth_type: none
+    test_freq: 5m
+
+# Note: Token environment variables must be set before running adhd:
+#
+#   export STRIPE_API_KEY="sk_live_..."
+#   export OPENAI_API_KEY="sk-..."
+#   export ANTHROPIC_API_KEY="sk-ant-..."
+#   export GITHUB_TOKEN="ghp_..."
+#   ./bin/adhd
+#
+# Dashboard Display:
+#
+#   ADHD Health Dashboard
+#   ────────────────────────────────────────
+#
+#   ■ certification — 5 features [🟢4 🟡0 🔴1]
+#   ──────────────────────────────────────────
+#     🟢 cert:stripe-api            Level: 100% | test_pass
+#     🟢 cert:openai-api             Level: 100% | test_pass
+#   → 🟢 cert:anthropic-api          Level: 100% | test_pass
+#     🟢 cert:github-api             Level: 100% | upgrade
+#     🔴 cert:public-service         Level: 20% | downgrade
+#
+# State Transitions:
+#
+#   100% (Certified)
+#     ↓ [3 consecutive failures]
+#     ↓ Emit: ScheduleEvent{Type:"downgrade", CertLevel:40}
+#   40% (Degraded)
+#     ↓ [more failures]
+#   0% (Revoked)
+#     ↑ [5 consecutive successes]
+#     ↑ Emit: ScheduleEvent{Type:"upgrade", CertLevel:100}
+#   100% (Certified)
