@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/exec"
 	"time"
 
 	"github.com/james-gibson/adhd/internal/config"
@@ -180,6 +182,9 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 
 	case "adhd.cluster.join":
 		result, respErr = s.handleClusterJoin(req.Params)
+
+	case "adhd.hurl.run":
+		result, respErr = s.handleHurlRun(r.Context(), req.Params)
 
 	default:
 		respErr = &jsonrpcError{
@@ -382,6 +387,24 @@ func (s *Server) handleToolsList() interface{} {
 						},
 					},
 					"required": []string{"name"},
+				},
+			},
+			{
+				"name":        "adhd.hurl.run",
+				"description": "Run a hurl HTTP test script and return pass/fail with output. hurl must be installed.",
+				"inputSchema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"script": map[string]interface{}{
+							"type":        "string",
+							"description": "Hurl script content (HTTP requests with optional assertions)",
+						},
+						"certify_domain": map[string]interface{}{
+							"type":        "string",
+							"description": "If set and the script passes, emit CapabilityVerifiedMsg for this domain",
+						},
+					},
+					"required": []string{"script"},
 				},
 			},
 		},
@@ -617,6 +640,60 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 	}
 	slog.Info("adhd.cluster.join accepted", "name", p["name"], "alarm_a", alarmA, "alarm_b", alarmB)
 	return map[string]interface{}{"accepted": true, "name": p["name"]}, nil
+}
+
+// handleHurlRun executes a hurl script and returns pass/fail with output.
+// hurl must be installed and on PATH. The script is written to a temp file,
+// run with --test --color=false, and the combined output is returned.
+// If certify_domain is set and the script passes, a CapabilityVerifiedMsg
+// is noted in the result for the caller to act on.
+func (s *Server) handleHurlRun(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
+	m, ok := params.(map[string]interface{})
+	if !ok {
+		return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
+	}
+	script, _ := m["script"].(string)
+	if script == "" {
+		return nil, &jsonrpcError{Code: -32602, Message: "script is required"}
+	}
+	certifyDomain, _ := m["certify_domain"].(string)
+
+	// Write script to a temp file.
+	f, err := os.CreateTemp("", "adhd-hurl-*.hurl")
+	if err != nil {
+		return nil, &jsonrpcError{Code: -32000, Message: "create temp file: " + err.Error()}
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+	if _, err := f.WriteString(script); err != nil {
+		_ = f.Close()
+		return nil, &jsonrpcError{Code: -32000, Message: "write script: " + err.Error()}
+	}
+	_ = f.Close()
+
+	// Check hurl is available.
+	hurlPath, err := exec.LookPath("hurl")
+	if err != nil {
+		return nil, &jsonrpcError{Code: -32000, Message: "hurl not found on PATH — install hurl (https://hurl.dev)"}
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(runCtx, hurlPath, "--test", "--color=false", f.Name()) //nolint:gosec
+	out, runErr := cmd.CombinedOutput()
+	passed := runErr == nil
+
+	result := map[string]interface{}{
+		"passed": passed,
+		"output": string(out),
+	}
+	if certifyDomain != "" {
+		result["certify_domain"] = certifyDomain
+		result["certified"] = passed
+	}
+
+	slog.Debug("adhd.hurl.run", "passed", passed, "certify_domain", certifyDomain)
+	return result, nil
 }
 
 // callPeerMCP sends a single JSON-RPC call to a peer MCP server and returns

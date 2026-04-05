@@ -2,6 +2,9 @@ package dashboard
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -133,6 +136,30 @@ func waitForDiscovery(ch <-chan discovery.Instance) tea.Cmd {
 			Hostname: inst.Hostname,
 			Addr:     inst.Addr,
 			Port:     inst.Port,
+		}
+	}
+}
+
+// probeHealthz returns a Cmd that immediately GETs /healthz on the endpoint.
+// On HTTP 200 it emits CapabilityVerifiedMsg{Domain:"smoke-alarm-network"};
+// on any error or non-200 it returns nil (silent — the watcher will report
+// the real health once its first poll fires).
+func probeHealthz(name, endpoint string) tea.Cmd {
+	return func() tea.Msg {
+		url := strings.TrimSuffix(endpoint, "/") + "/healthz"
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Get(url) //nolint:noctx
+		if err != nil {
+			return nil
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			return nil
+		}
+		return CapabilityVerifiedMsg{
+			Domain:  "smoke-alarm-network",
+			Status:  lights.StatusGreen,
+			Details: fmt.Sprintf("%s /healthz OK", name),
 		}
 	}
 }

@@ -247,6 +247,13 @@ func (m *BubbleTeaDashboard) Init() tea.Cmd {
 		cmds = append(cmds, waitForLightUpdate(m.lightUpdates))
 	}
 
+	// Fire immediate /healthz probes for all configured smoke-alarm endpoints.
+	// This certifies @domain-smoke-alarm-network without waiting for the first
+	// watcher poll cycle (which may be 10s away).
+	for _, ep := range m.config.SmokeAlarm {
+		cmds = append(cmds, probeHealthz(ep.Name, ep.Endpoint))
+	}
+
 	// Start mDNS discovery browser
 	if m.browser != nil {
 		ch, err := m.browser.Browse(m.ctx, discovery.ServiceType)
@@ -535,11 +542,19 @@ func (m *BubbleTeaDashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.NewNames) > 0 {
 			m.applyCapabilityToFeatures("demo", lights.StatusGreen,
 				fmt.Sprintf("%d cluster(s) in lezz demo registry", len(m.knownClusterNames)))
+			// Clusters arriving via the registry proves peer discovery is working.
+			m.applyCapabilityToFeatures("discovery", lights.StatusGreen,
+				fmt.Sprintf("registry: %d cluster(s) known", len(m.knownClusterNames)))
 		}
 
 		cmds := []tea.Cmd{pollClusterRegistry(msg.RegistryURL, m.knownClusterNames)}
 		if needLightWaiter && m.lightUpdates != nil {
 			cmds = append(cmds, waitForLightUpdate(m.lightUpdates))
+		}
+		// Immediately probe new endpoints' health so lights go green without
+		// waiting for the first watcher poll cycle.
+		for _, ep := range msg.NewEndpoints {
+			cmds = append(cmds, probeHealthz(ep.Name, ep.Endpoint))
 		}
 		return m, tea.Batch(cmds...)
 	}
