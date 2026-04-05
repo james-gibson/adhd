@@ -149,7 +149,7 @@ func TestServerStatus(t *testing.T) {
 		t.Fatal("result is not an object")
 	}
 
-	summary, ok := resultMap["summary"].(map[string]interface{})
+	summary, ok := resultMap["lights"].(map[string]interface{})
 	if !ok {
 		t.Fatal("summary is not an object")
 	}
@@ -590,7 +590,7 @@ func TestServerStatusSummaryAllStatuses(t *testing.T) {
 		t.Fatal("result is not an object")
 	}
 
-	summary, ok := resultMap["summary"].(map[string]interface{})
+	summary, ok := resultMap["lights"].(map[string]interface{})
 	if !ok {
 		t.Fatal("summary is not an object")
 	}

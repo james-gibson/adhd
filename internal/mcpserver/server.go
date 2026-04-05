@@ -666,9 +666,7 @@ func (s *Server) handleToolsList() interface{} {
 }
 // handleStatus returns dashboard summary
 func (s *Server) handleStatus() interface{} {
-	allLights := s.cluster.All()
-
-	summary := map[string]int{
+	lightSummary := map[string]int{
 		"total":  s.cluster.Count(),
 		"green":  s.cluster.CountByStatus(lights.StatusGreen),
 		"red":    s.cluster.CountByStatus(lights.StatusRed),
@@ -676,10 +674,39 @@ func (s *Server) handleStatus() interface{} {
 		"dark":   s.cluster.CountByStatus(lights.StatusDark),
 	}
 
-	return map[string]interface{}{
-		"summary": summary,
-		"lights":  len(allLights),
+	s.mu.RLock()
+	dynamicCount := len(s.dynamicTools)
+	peerNames := make([]string, 0, len(s.clusterPeers))
+	for name := range s.clusterPeers {
+		peerNames = append(peerNames, name)
 	}
+	pathCount := 0
+	for _, paths := range s.negotiatedPaths {
+		pathCount += len(paths)
+	}
+	s.mu.RUnlock()
+
+	out := map[string]interface{}{
+		"lights":        lightSummary,
+		"cluster_peers": peerNames,
+		"paths":         pathCount,
+		"dynamic_tools": dynamicCount,
+	}
+
+	if s.topologyProvider != nil {
+		topo := s.topologyProvider()
+		if v, ok := topo["trust_rung"]; ok {
+			out["trust_rung"] = v
+		}
+		if v, ok := topo["local_name"]; ok {
+			out["instance"] = v
+		}
+	}
+	if s.instanceIsotope != "" {
+		out["isotope"] = s.instanceIsotope
+	}
+
+	return out
 }
 
 // handleLightsList returns all lights
