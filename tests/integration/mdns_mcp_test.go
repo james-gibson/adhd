@@ -177,11 +177,11 @@ func TestMDNSDiscoveredLightsCountedInStatus(t *testing.T) {
 	if !ok {
 		t.Fatalf("adhd.status: no result")
 	}
-	summary, ok := result["summary"].(map[string]interface{})
+	lights, ok := result["lights"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("adhd.status: no summary")
+		t.Fatalf("adhd.status: no lights")
 	}
-	dark := int(summary["dark"].(float64))
+	dark := int(lights["dark"].(float64))
 	if dark < 2 {
 		t.Errorf("expected at least 2 dark lights (the 2 mDNS-discovered ones), got %d", dark)
 	}

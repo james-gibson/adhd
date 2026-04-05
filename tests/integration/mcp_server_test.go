@@ -165,16 +165,16 @@ func TestMCPServerStatus(t *testing.T) {
 		t.Fatal("result is not an object")
 	}
 
-	summary, ok := resultMap["summary"].(map[string]interface{})
+	lights, ok := resultMap["lights"].(map[string]interface{})
 	if !ok {
-		t.Fatal("summary is not an object")
+		t.Fatal("lights is not an object")
 	}
 
-	total := int(summary["total"].(float64))
-	green := int(summary["green"].(float64))
-	red := int(summary["red"].(float64))
-	yellow := int(summary["yellow"].(float64))
-	dark := int(summary["dark"].(float64))
+	total := int(lights["total"].(float64))
+	green := int(lights["green"].(float64))
+	red := int(lights["red"].(float64))
+	yellow := int(lights["yellow"].(float64))
+	dark := int(lights["dark"].(float64))
 
 	if total != 5 {
 		t.Errorf("expected total=5, got %d", total)
@@ -320,9 +320,9 @@ func TestMCPServerEmptyCluster(t *testing.T) {
 	// Status should show all zeros
 	result = doMCPCall(t, addr, "adhd.status", nil)
 	resultMap, _ = result["result"].(map[string]interface{})
-	summary, _ := resultMap["summary"].(map[string]interface{})
+	lights, _ := resultMap["lights"].(map[string]interface{})
 
-	if total := int(summary["total"].(float64)); total != 0 {
+	if total := int(lights["total"].(float64)); total != 0 {
 		t.Errorf("expected total=0, got %d", total)
 	}
 }
@@ -436,9 +436,9 @@ func TestMCPServerLargeCluster(t *testing.T) {
 	// Query status
 	result = doMCPCall(t, addr, "adhd.status", nil)
 	resultMap, _ = result["result"].(map[string]interface{})
-	summary, _ := resultMap["summary"].(map[string]interface{})
+	lights, _ := resultMap["lights"].(map[string]interface{})
 
-	if total := int(summary["total"].(float64)); total != 100 {
+	if total := int(lights["total"].(float64)); total != 100 {
 		t.Errorf("expected total=100, got %d", total)
 	}
 }

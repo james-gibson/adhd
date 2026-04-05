@@ -203,16 +203,16 @@ func TestFireMarshalProbeADHDStatus(t *testing.T) {
 		t.Fatal("adhd.status result is not an object")
 	}
 
-	summary, ok := result["summary"].(map[string]interface{})
+	lights, ok := result["lights"].(map[string]interface{})
 	if !ok {
-		t.Fatal("summary is not an object")
+		t.Fatal("lights is not an object")
 	}
 
 	// Verify counts
-	total := int(summary["total"].(float64))
-	green := int(summary["green"].(float64))
-	red := int(summary["red"].(float64))
-	yellow := int(summary["yellow"].(float64))
+	total := int(lights["total"].(float64))
+	green := int(lights["green"].(float64))
+	red := int(lights["red"].(float64))
+	yellow := int(lights["yellow"].(float64))
 
 	if total != 3 {
 		t.Errorf("expected 3 total lights, got %d", total)
