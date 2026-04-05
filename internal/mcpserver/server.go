@@ -254,6 +254,9 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 	case "tools/list":
 		result = s.handleToolsList()
 
+	case "tools/call":
+		result, respErr = s.handleToolsCall(r.Context(), req.Params)
+
 	case "ping":
 		result = map[string]interface{}{"pong": true}
 
@@ -664,6 +667,107 @@ func (s *Server) handleToolsList() interface{} {
 		"tools": append(static, dynTools...),
 	}
 }
+
+// handleToolsCall invokes a tool by name and returns the result
+func (s *Server) handleToolsCall(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
+	paramsMap, ok := params.(map[string]interface{})
+	if !ok {
+		return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
+	}
+
+	toolName, ok := paramsMap["name"].(string)
+	if !ok {
+		return nil, &jsonrpcError{Code: -32602, Message: "name is required and must be a string"}
+	}
+
+	toolInput := paramsMap["input"]
+	if toolInput == nil {
+		toolInput = map[string]interface{}{}
+	}
+
+	// Route to the appropriate handler based on tool name
+	var result interface{}
+	var errResult *jsonrpcError
+
+	switch toolName {
+	case "adhd.status":
+		result = s.handleStatus()
+	case "adhd.lights.list":
+		result = s.handleLightsList()
+	case "adhd.lights.get":
+		result, errResult = s.handleLightsGet(toolInput)
+	case "adhd.isotope.status":
+		result = s.handleIsotopeStatus()
+	case "adhd.isotope.peers":
+		result = s.handleIsotopePeers()
+	case "adhd.isotope.instance":
+		result = s.handleIsotopeInstance()
+	case "adhd.rung.respond":
+		result, errResult = s.handleRungRespond(toolInput)
+	case "adhd.rung.verify":
+		result, errResult = s.handleRungVerify(toolInput)
+	case "adhd.rung.challenge":
+		result, errResult = s.handleRungChallenge(ctx, toolInput)
+	case "adhd.cluster.join":
+		result, errResult = s.handleClusterJoin(toolInput)
+	case "adhd.hurl.run":
+		result, errResult = s.handleHurlRun(ctx, toolInput)
+	case "adhd.gh.run":
+		result, errResult = s.handleGHRun(ctx, toolInput)
+	case "adhd.dependabot.alerts":
+		result, errResult = s.handleDependabotAlerts(ctx, toolInput)
+	case "adhd.path.negotiate":
+		result, errResult = s.handlePathNegotiate(ctx, toolInput)
+	case "adhd.path.verify":
+		result, errResult = s.handlePathVerify(ctx, toolInput)
+	case "adhd.path.list":
+		result, errResult = s.handlePathList(toolInput)
+	default:
+		// Check dynamic tools
+		s.mu.RLock()
+		var dynTool *dynamicTool
+		for _, t := range s.dynamicTools {
+			if t.name == toolName {
+				dynTool = t
+				break
+			}
+		}
+		s.mu.RUnlock()
+		if dynTool != nil {
+			if dynTool.honeypot {
+				callerIP, _ := ctx.Value(callerIPKey{}).(string)
+				slog.Warn("honeypot tool triggered via tools/call",
+					"tool", toolName,
+					"caller_ip", callerIP,
+				)
+				s.fireSecurity("warn", "honeypot_triggered", map[string]interface{}{
+					"tool":      toolName,
+					"caller_ip": callerIP,
+				})
+				result = dynTool.fakeResult
+			} else {
+				result, errResult = dynTool.handler(ctx, toolInput)
+			}
+		} else {
+			return nil, &jsonrpcError{Code: -32601, Message: "Tool not found: " + toolName}
+		}
+	}
+
+	if errResult != nil {
+		return nil, errResult
+	}
+
+	// Wrap result in MCP tools/call response format
+	return map[string]interface{}{
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": fmt.Sprintf("%v", result),
+			},
+		},
+	}, nil
+}
+
 // handleStatus returns dashboard summary
 func (s *Server) handleStatus() interface{} {
 	lightSummary := map[string]int{
