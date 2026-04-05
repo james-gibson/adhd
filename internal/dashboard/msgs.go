@@ -14,6 +14,7 @@ import (
 	"github.com/james-gibson/adhd/internal/discovery"
 	"github.com/james-gibson/adhd/internal/lights"
 	"github.com/james-gibson/adhd/internal/smokelink"
+	"github.com/james-gibson/adhd/internal/smoketest"
 )
 
 // CapabilityVerifiedMsg is delivered when a runtime capability has been
@@ -67,6 +68,13 @@ type ClusterRegistryUpdateMsg struct {
 	NewEndpoints []config.SmokeAlarmEndpoint
 	NewNames     []string
 	RegistryURL  string
+}
+
+// SmokeTestEventMsg is delivered when a smoke test scheduler event occurs
+// (downgrade, upgrade, test pass/fail). Used to update certification levels
+// and display real-time endpoint health in the dashboard.
+type SmokeTestEventMsg struct {
+	Event smoketest.ScheduleEvent
 }
 
 // pollClusterRegistry returns a Cmd that sleeps for registryPollInterval, then
@@ -161,5 +169,18 @@ func probeHealthz(name, endpoint string) tea.Cmd {
 			Status:  lights.StatusGreen,
 			Details: fmt.Sprintf("%s /healthz OK", name),
 		}
+	}
+}
+
+// waitForSmokeTestEvent returns a Cmd that blocks until the next ScheduleEvent arrives
+// from the smoke test scheduler, then delivers it into the Bubble Tea update cycle.
+// Callers re-issue waitForSmokeTestEvent after each message to keep the loop alive.
+func waitForSmokeTestEvent(ch <-chan smoketest.ScheduleEvent) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return SmokeTestEventMsg{Event: event}
 	}
 }

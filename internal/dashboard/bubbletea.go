@@ -21,6 +21,7 @@ import (
 	"github.com/james-gibson/adhd/internal/lights"
 	"github.com/james-gibson/adhd/internal/mcpserver"
 	"github.com/james-gibson/adhd/internal/smokelink"
+	"github.com/james-gibson/adhd/internal/smoketest"
 )
 
 // BubbleTeaDashboard is the main Bubble Tea model
@@ -32,6 +33,8 @@ type BubbleTeaDashboard struct {
 	instances    <-chan discovery.Instance // live discovery channel; nil until Browse starts
 	watcher      *smokelink.Watcher       // polls discovered and configured smoke-alarm endpoints
 	lightUpdates chan smokelink.LightUpdate // receives watcher events; nil until Init
+	scheduler    *smoketest.Scheduler       // smoke test scheduler for certified endpoints
+	testEvents   chan smoketest.ScheduleEvent // receives scheduler events; nil until Init
 	selectedIndex int
 	config        *config.Config
 	ctx           context.Context
@@ -454,6 +457,14 @@ func (m *BubbleTeaDashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.lightUpdates != nil {
 			return m, waitForLightUpdate(m.lightUpdates)
+		}
+		return m, nil
+
+	case SmokeTestEventMsg:
+		// Handle smoke test events: downgrade, upgrade, test pass/fail
+		m.applySmokeTestEvent(msg.Event)
+		if m.testEvents != nil {
+			return m, waitForSmokeTestEvent(m.testEvents)
 		}
 		return m, nil
 
@@ -986,6 +997,45 @@ func (m *BubbleTeaDashboard) Shutdown() {
 	if m.mcpServer != nil {
 		_ = m.mcpServer.Shutdown(m.ctx)
 	}
+}
+
+// applySmokeTestEvent processes a smoke test event and updates certification lights
+func (m *BubbleTeaDashboard) applySmokeTestEvent(event smoketest.ScheduleEvent) {
+	// Create a light name for this certified endpoint
+	lightName := fmt.Sprintf("cert:%s", event.EndpointID)
+
+	// Create or update the certification light
+	light := m.lights.GetByName(lightName)
+	if light == nil {
+		light = lights.New(lightName, "certification")
+		light.Source = "smoke-test"
+		m.lights.Add(light)
+	}
+
+	// Determine light status based on certification level and event type
+	status := lights.StatusDark
+	if event.CertLevel >= 80 {
+		status = lights.StatusGreen
+	} else if event.CertLevel >= 40 {
+		status = lights.StatusYellow
+	} else if event.CertLevel > 0 {
+		status = lights.StatusRed
+	}
+
+	light.SetStatus(status)
+	light.SetDetails(fmt.Sprintf("Level: %d%% | %s", event.CertLevel, event.Type))
+	light.SourceMeta = map[string]string{
+		"endpoint_id": event.EndpointID,
+		"cert_level":  fmt.Sprintf("%d", event.CertLevel),
+		"event_type":  event.Type,
+	}
+
+	slog.Debug("smoke test event applied",
+		"endpoint_id", event.EndpointID,
+		"cert_level", event.CertLevel,
+		"event_type", event.Type,
+		"status", status,
+	)
 }
 
 // Run starts the Bubble Tea dashboard
