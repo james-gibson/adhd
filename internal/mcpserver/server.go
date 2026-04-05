@@ -3,6 +3,9 @@ package mcpserver
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,12 +38,46 @@ type ReceiptVerifier func(receipt, featureID, nonce string) bool
 // the new cluster's smoke-alarm endpoints into the running watcher.
 type ClusterJoinHandler func(name, alarmA, alarmB string) error
 
+// callerIPKey is a context key for the HTTP caller's remote address.
+type callerIPKey struct{}
+
 // dynamicTool is a runtime-registered MCP tool added when a cluster joins.
+// honeypot tools return plausible-looking fake results but log the caller's identity.
 type dynamicTool struct {
 	name        string
 	description string
 	inputSchema map[string]interface{}
+	honeypot    bool
+	fakeResult  interface{}
 	handler     func(ctx context.Context, params interface{}) (interface{}, *jsonrpcError)
+}
+
+// clusterPeerInfo tracks a peer ADHD instance discovered via adhd.cluster.join.
+type clusterPeerInfo struct {
+	Name      string                   `json:"name"`
+	Endpoint  string                   `json:"endpoint"` // adhd_mcp URL
+	AlarmA    string                   `json:"alarm_a"`
+	AlarmB    string                   `json:"alarm_b"`
+	Projects  []map[string]interface{} `json:"projects,omitempty"`
+	JoinedAt  time.Time                `json:"joined_at"`
+}
+
+// PathHop records a single verified hop in a negotiated trust path.
+type PathHop struct {
+	Isotope  string `json:"isotope"`
+	Endpoint string `json:"endpoint"`
+	Rung     int    `json:"rung"`
+	Nonce    string `json:"nonce"`
+	Receipt  string `json:"receipt"`
+}
+
+// NegotiatedPath is a pre-verified multi-hop trust path to a target isotope.
+type NegotiatedPath struct {
+	Target       string    `json:"target"`
+	Hops         []PathHop `json:"hops"`
+	MinRung      int       `json:"min_rung"`
+	FeatureID    string    `json:"feature_id"`
+	NegotiatedAt time.Time `json:"negotiated_at"`
 }
 
 // Server hosts an MCP-compatible endpoint exposing dashboard lights
@@ -61,6 +99,12 @@ type Server struct {
 	// Dynamic per-repo tools registered on cluster join.
 	mu           sync.RWMutex
 	dynamicTools []*dynamicTool
+
+	// Cluster peers discovered via adhd.cluster.join — used for path negotiation.
+	clusterPeers    map[string]*clusterPeerInfo
+
+	// Pre-negotiated trust paths, keyed by target isotope name.
+	negotiatedPaths map[string][]*NegotiatedPath
 }
 
 // NewServer creates an MCP server
@@ -71,6 +115,8 @@ func NewServer(cfg config.MCPServerConfig, cluster *lights.Cluster) *Server {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		clusterPeers:    make(map[string]*clusterPeerInfo),
+		negotiatedPaths: make(map[string][]*NegotiatedPath),
 	}
 }
 
@@ -145,6 +191,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 // handleMCPRPC processes JSON-RPC requests
 func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
+	// Inject caller IP into context for honeypot and audit logging.
+	ctxWithIP := context.WithValue(r.Context(), callerIPKey{}, r.RemoteAddr)
+	r = r.WithContext(ctxWithIP)
+
 	var req jsonrpcRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.respondError(w, -32700, "Parse error")
@@ -206,19 +256,38 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 	case "adhd.dependabot.alerts":
 		result, respErr = s.handleDependabotAlerts(r.Context(), req.Params)
 
+	case "adhd.path.negotiate":
+		result, respErr = s.handlePathNegotiate(r.Context(), req.Params)
+
+	case "adhd.path.verify":
+		result, respErr = s.handlePathVerify(r.Context(), req.Params)
+
+	case "adhd.path.list":
+		result, respErr = s.handlePathList(req.Params)
+
 	default:
-		// Check runtime-registered per-repo tools.
+		// Check runtime-registered per-repo and per-project tools.
 		s.mu.RLock()
-		var dynHandler func(context.Context, interface{}) (interface{}, *jsonrpcError)
+		var dynTool *dynamicTool
 		for _, t := range s.dynamicTools {
 			if t.name == req.Method {
-				dynHandler = t.handler
+				dynTool = t
 				break
 			}
 		}
 		s.mu.RUnlock()
-		if dynHandler != nil {
-			result, respErr = dynHandler(r.Context(), req.Params)
+		if dynTool != nil {
+			if dynTool.honeypot {
+				callerIP, _ := r.Context().Value(callerIPKey{}).(string)
+				slog.Warn("honeypot tool triggered",
+					"tool", req.Method,
+					"caller_ip", callerIP,
+					"params", req.Params,
+				)
+				result = dynTool.fakeResult
+			} else {
+				result, respErr = dynTool.handler(r.Context(), req.Params)
+			}
 		} else {
 			respErr = &jsonrpcError{
 				Code:    -32601,
@@ -324,7 +393,7 @@ func (s *Server) handleToolsList() interface{} {
 		},
 		{
 			"name":        "adhd.isotope.peers",
-			"description": "Get list of discovered peer ADHD isotopes",
+			"description": "Get list of discovered peer ADHD isotopes with trust rungs",
 			"inputSchema": map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
@@ -386,7 +455,7 @@ func (s *Server) handleToolsList() interface{} {
 				"properties": map[string]interface{}{
 					"target_url": map[string]interface{}{
 						"type":        "string",
-						"description": "Base URL of the peer MCP server (e.g. http://localhost:9001)",
+						"description": "Base URL of the peer MCP server",
 					},
 					"feature_id": map[string]interface{}{
 						"type":        "string",
@@ -418,10 +487,25 @@ func (s *Server) handleToolsList() interface{} {
 						"type":        "string",
 						"description": "HTTP URL of the cluster secondary smoke-alarm",
 					},
+					"adhd_mcp": map[string]interface{}{
+						"type":        "string",
+						"description": "HTTP URL of the cluster's own ADHD MCP server",
+					},
 					"github_repos": map[string]interface{}{
 						"type":        "array",
-						"description": "GitHub repo slugs owned by this cluster (e.g. owner/name)",
+						"description": "GitHub repo slugs owned by this cluster",
 						"items":       map[string]interface{}{"type": "string"},
+					},
+					"honeypot_tools": map[string]interface{}{
+						"type":        "array",
+						"description": "Decoy tool descriptors to register. Callers who invoke these are logged as untrusted.",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"name":        map[string]interface{}{"type": "string"},
+								"description": map[string]interface{}{"type": "string"},
+							},
+						},
 					},
 				},
 				"required": []string{"name"},
@@ -453,7 +537,7 @@ func (s *Server) handleToolsList() interface{} {
 				"properties": map[string]interface{}{
 					"args": map[string]interface{}{
 						"type":        "array",
-						"description": `Arguments to pass to gh (e.g. ["api", "repos/owner/repo/dependabot/alerts"])`,
+						"description": "Arguments to pass to gh",
 						"items":       map[string]interface{}{"type": "string"},
 					},
 					"timeout_seconds": map[string]interface{}{
@@ -480,6 +564,55 @@ func (s *Server) handleToolsList() interface{} {
 					},
 				},
 				"required": []string{"repo"},
+			},
+		},
+		{
+			"name":        "adhd.path.negotiate",
+			"description": "Pre-negotiate verified multi-hop trust paths to a target isotope with honeypot tool exchange.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"target_isotope": map[string]interface{}{
+						"type":        "string",
+						"description": "Name of the target isotope to negotiate paths to",
+					},
+					"feature_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Feature ID to verify at each hop",
+					},
+				},
+				"required": []string{"target_isotope", "feature_id"},
+			},
+		},
+		{
+			"name":        "adhd.path.verify",
+			"description": "Re-verify all hops in a previously negotiated path by re-issuing fresh rung challenges.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"target_isotope": map[string]interface{}{
+						"type":        "string",
+						"description": "Target isotope whose paths to re-verify",
+					},
+					"feature_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Feature ID to use for re-verification challenges",
+					},
+				},
+				"required": []string{"target_isotope", "feature_id"},
+			},
+		},
+		{
+			"name":        "adhd.path.list",
+			"description": "List all pre-negotiated trust paths, optionally filtered by target isotope.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"target_isotope": map[string]interface{}{
+						"type":        "string",
+						"description": "Filter to a specific target (optional)",
+					},
+				},
 			},
 		},
 	}
@@ -587,20 +720,33 @@ func (s *Server) handleIsotopeStatus() interface{} {
 	}
 }
 
-// handleIsotopePeers returns discovered peer ADHD isotopes
+// handleIsotopePeers returns discovered peer ADHD isotopes, merging topology
+// provider peers with cluster peers discovered via adhd.cluster.join.
 func (s *Server) handleIsotopePeers() interface{} {
-	if s.topologyProvider == nil {
-		return map[string]interface{}{
-			"peers": []interface{}{},
+	var peers []interface{}
+
+	if s.topologyProvider != nil {
+		topology := s.topologyProvider()
+		if tp, ok := topology["peers"].([]interface{}); ok {
+			peers = append(peers, tp...)
 		}
 	}
 
-	topology := s.topologyProvider()
-	peers, ok := topology["peers"].([]interface{})
-	if !ok {
+	s.mu.RLock()
+	for _, cp := range s.clusterPeers {
+		peers = append(peers, map[string]interface{}{
+			"name":      cp.Name,
+			"role":      "cluster",
+			"endpoint":  cp.Endpoint,
+			"status":    "active",
+			"joined_at": cp.JoinedAt,
+		})
+	}
+	s.mu.RUnlock()
+
+	if peers == nil {
 		peers = []interface{}{}
 	}
-
 	return map[string]interface{}{
 		"peers": peers,
 	}
@@ -760,8 +906,53 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 		}
 	}
 
-	slog.Info("adhd.cluster.join accepted", "name", p["name"], "alarm_a", alarmA, "alarm_b", alarmB, "repos", repoCount, "projects", projectCount)
-	return map[string]interface{}{"accepted": true, "name": p["name"], "repos_registered": repoCount, "projects_registered": projectCount}, nil
+	// Track this cluster peer for path negotiation.
+	adhdMCP, _ := m["adhd_mcp"].(string)
+	s.mu.Lock()
+	s.clusterPeers[p["name"]] = &clusterPeerInfo{
+		Name:     p["name"],
+		Endpoint: adhdMCP,
+		AlarmA:   alarmA,
+		AlarmB:   alarmB,
+		JoinedAt: time.Now(),
+	}
+	s.mu.Unlock()
+
+	// Register honeypot tools sent by the joining cluster.
+	var honeypotCount int
+	if hpRaw, ok := m["honeypot_tools"]; ok {
+		if hpSlice, ok := hpRaw.([]interface{}); ok {
+			for _, h := range hpSlice {
+				hpMap, ok := h.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				hpName, _ := hpMap["name"].(string)
+				hpDesc, _ := hpMap["description"].(string)
+				if hpName == "" {
+					continue
+				}
+				s.registerHoneypotTool(p["name"], hpName, hpDesc)
+				honeypotCount++
+			}
+		}
+	}
+
+	slog.Info("adhd.cluster.join accepted",
+		"name", p["name"],
+		"alarm_a", alarmA,
+		"alarm_b", alarmB,
+		"repos", repoCount,
+		"projects", projectCount,
+		"honeypots", honeypotCount,
+	)
+	return map[string]interface{}{
+		"accepted":            true,
+		"name":                p["name"],
+		"repos_registered":    repoCount,
+		"projects_registered": projectCount,
+		"honeypots_set":       honeypotCount,
+	}, nil
 }
 
 // handleHurlRun executes a hurl script and returns pass/fail with output.
@@ -981,6 +1172,347 @@ func (s *Server) registerRepoTool(clusterName, slug string) {
 		},
 	})
 	slog.Info("registered per-repo tool", "tool", toolName, "cluster", clusterName)
+}
+
+// registerHoneypotTool registers a decoy tool that looks legitimate but logs any caller
+// that invokes it. The fakeResult is returned to avoid revealing the trap.
+func (s *Server) registerHoneypotTool(clusterName, name, description string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.dynamicTools {
+		if t.name == name {
+			return
+		}
+	}
+	s.dynamicTools = append(s.dynamicTools, &dynamicTool{
+		name:        name,
+		description: description,
+		honeypot:    true,
+		fakeResult:  map[string]interface{}{"ok": true},
+		inputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+	})
+	slog.Info("registered honeypot tool", "tool", name, "cluster", clusterName)
+}
+
+// RegisterHoneypotTool is the exported version for external use (e.g. tests or demo setup).
+func (s *Server) RegisterHoneypotTool(name, description string, fakeResult interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.dynamicTools {
+		if t.name == name {
+			return
+		}
+	}
+	s.dynamicTools = append(s.dynamicTools, &dynamicTool{
+		name:        name,
+		description: description,
+		honeypot:    true,
+		fakeResult:  fakeResult,
+		inputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+	})
+}
+
+// generateNonce returns a cryptographically random 16-byte hex nonce.
+func generateNonce() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback: use time-based nonce (should not happen in practice)
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// handlePathNegotiate builds and stores pre-verified multi-hop trust paths to a target.
+// It challenges each potential hop with adhd.rung.challenge and records the receipts.
+// Direct paths (1-hop) and intermediary paths (2-hop via cluster peers) are both explored.
+func (s *Server) handlePathNegotiate(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
+	m, ok := params.(map[string]interface{})
+	if !ok {
+		return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
+	}
+	targetIsotope, _ := m["target_isotope"].(string)
+	if targetIsotope == "" {
+		return nil, &jsonrpcError{Code: -32602, Message: "target_isotope is required"}
+	}
+	featureID, _ := m["feature_id"].(string)
+	if featureID == "" {
+		return nil, &jsonrpcError{Code: -32602, Message: "feature_id is required"}
+	}
+
+	s.mu.RLock()
+	peers := make(map[string]*clusterPeerInfo, len(s.clusterPeers))
+	for k, v := range s.clusterPeers {
+		peers[k] = v
+	}
+	s.mu.RUnlock()
+
+	var paths []*NegotiatedPath
+
+	for _, peer := range peers {
+		if peer.Endpoint == "" {
+			continue
+		}
+
+		if peer.Name == targetIsotope {
+			// Direct 1-hop path: challenge the target peer directly.
+			nonce := generateNonce()
+			res, err := s.callPeerMCP(ctx, peer.Endpoint, "adhd.rung.challenge", map[string]interface{}{
+				"target_url": peer.Endpoint,
+				"feature_id": featureID,
+				"nonce":      nonce,
+			})
+			if err != nil {
+				slog.Debug("path negotiate: direct challenge failed", "peer", peer.Name, "error", err)
+				continue
+			}
+			verified, _ := res["verified"].(bool)
+			if !verified {
+				continue
+			}
+			receipt, _ := res["receipt"].(string)
+			rung := peerRungFromResult(res)
+			paths = append(paths, &NegotiatedPath{
+				Target:    targetIsotope,
+				FeatureID: featureID,
+				Hops: []PathHop{{
+					Isotope:  peer.Name,
+					Endpoint: peer.Endpoint,
+					Rung:     rung,
+					Nonce:    nonce,
+					Receipt:  receipt,
+				}},
+				MinRung:      rung,
+				NegotiatedAt: time.Now(),
+			})
+			continue
+		}
+
+		// 2-hop path: ask this intermediary peer for its own peer list,
+		// then challenge it as hop-1 and ask it to challenge the target as hop-2.
+		interPeers, err := s.callPeerMCP(ctx, peer.Endpoint, "adhd.isotope.peers", nil)
+		if err != nil {
+			continue
+		}
+		targetEndpoint := findEndpointInPeers(interPeers, targetIsotope)
+		if targetEndpoint == "" {
+			continue
+		}
+
+		// Challenge hop-1 (the intermediary).
+		nonce1 := generateNonce()
+		res1, err := s.callPeerMCP(ctx, peer.Endpoint, "adhd.rung.challenge", map[string]interface{}{
+			"target_url": peer.Endpoint,
+			"feature_id": featureID,
+			"nonce":      nonce1,
+		})
+		if err != nil || !isVerified(res1) {
+			continue
+		}
+
+		// Ask hop-1 to challenge hop-2 (the target) on our behalf.
+		nonce2 := generateNonce()
+		res2, err := s.callPeerMCP(ctx, peer.Endpoint, "adhd.rung.challenge", map[string]interface{}{
+			"target_url": targetEndpoint,
+			"feature_id": featureID,
+			"nonce":      nonce2,
+		})
+		if err != nil || !isVerified(res2) {
+			continue
+		}
+
+		rung1 := peerRungFromResult(res1)
+		rung2 := peerRungFromResult(res2)
+		minRung := rung1
+		if rung2 < minRung {
+			minRung = rung2
+		}
+
+		paths = append(paths, &NegotiatedPath{
+			Target:    targetIsotope,
+			FeatureID: featureID,
+			Hops: []PathHop{
+				{Isotope: peer.Name, Endpoint: peer.Endpoint, Rung: rung1, Nonce: nonce1, Receipt: safeReceipt(res1)},
+				{Isotope: targetIsotope, Endpoint: targetEndpoint, Rung: rung2, Nonce: nonce2, Receipt: safeReceipt(res2)},
+			},
+			MinRung:      minRung,
+			NegotiatedAt: time.Now(),
+		})
+	}
+
+	// Sort by min_rung descending (highest trust first).
+	sort.Slice(paths, func(i, j int) bool {
+		return paths[i].MinRung > paths[j].MinRung
+	})
+
+	// Store for later retrieval and verification.
+	s.mu.Lock()
+	s.negotiatedPaths[targetIsotope] = paths
+	s.mu.Unlock()
+
+	// Encode paths as base64 tokens for transport.
+	result := make([]interface{}, 0, len(paths))
+	for _, p := range paths {
+		data, _ := json.Marshal(p)
+		result = append(result, map[string]interface{}{
+			"target":        p.Target,
+			"min_rung":      p.MinRung,
+			"hops":          len(p.Hops),
+			"feature_id":    p.FeatureID,
+			"negotiated_at": p.NegotiatedAt,
+			"token":         base64.StdEncoding.EncodeToString(data),
+		})
+	}
+
+	slog.Info("adhd.path.negotiate complete",
+		"target", targetIsotope,
+		"paths_found", len(paths),
+		"best_rung", func() int {
+			if len(paths) > 0 {
+				return paths[0].MinRung
+			}
+			return 0
+		}(),
+	)
+	return map[string]interface{}{
+		"target":      targetIsotope,
+		"paths_found": len(paths),
+		"paths":       result,
+	}, nil
+}
+
+// handlePathVerify re-challenges each hop of all stored paths to the target,
+// confirming they remain alive and trusted with fresh nonces.
+func (s *Server) handlePathVerify(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
+	m, ok := params.(map[string]interface{})
+	if !ok {
+		return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
+	}
+	targetIsotope, _ := m["target_isotope"].(string)
+	if targetIsotope == "" {
+		return nil, &jsonrpcError{Code: -32602, Message: "target_isotope is required"}
+	}
+	featureID, _ := m["feature_id"].(string)
+	if featureID == "" {
+		return nil, &jsonrpcError{Code: -32602, Message: "feature_id is required"}
+	}
+
+	s.mu.RLock()
+	paths := s.negotiatedPaths[targetIsotope]
+	s.mu.RUnlock()
+
+	if len(paths) == 0 {
+		return map[string]interface{}{
+			"target":  targetIsotope,
+			"paths":   []interface{}{},
+			"message": "no pre-negotiated paths — run adhd.path.negotiate first",
+		}, nil
+	}
+
+	results := make([]interface{}, 0, len(paths))
+	for _, path := range paths {
+		allValid := true
+		hopResults := make([]interface{}, 0, len(path.Hops))
+		for _, hop := range path.Hops {
+			nonce := generateNonce()
+			res, err := s.callPeerMCP(ctx, hop.Endpoint, "adhd.rung.challenge", map[string]interface{}{
+				"target_url": hop.Endpoint,
+				"feature_id": featureID,
+				"nonce":      nonce,
+			})
+			valid := err == nil && isVerified(res)
+			if !valid {
+				allValid = false
+			}
+			hopResults = append(hopResults, map[string]interface{}{
+				"isotope":  hop.Isotope,
+				"endpoint": hop.Endpoint,
+				"rung":     hop.Rung,
+				"valid":    valid,
+			})
+		}
+		results = append(results, map[string]interface{}{
+			"target":   path.Target,
+			"min_rung": path.MinRung,
+			"valid":    allValid,
+			"hops":     hopResults,
+		})
+	}
+
+	return map[string]interface{}{
+		"target":  targetIsotope,
+		"paths":   results,
+	}, nil
+}
+
+// handlePathList returns pre-negotiated paths, optionally filtered by target.
+func (s *Server) handlePathList(params interface{}) (interface{}, *jsonrpcError) {
+	var filterTarget string
+	if m, ok := params.(map[string]interface{}); ok {
+		filterTarget, _ = m["target_isotope"].(string)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := []interface{}{}
+	for target, paths := range s.negotiatedPaths {
+		if filterTarget != "" && target != filterTarget {
+			continue
+		}
+		for _, p := range paths {
+			result = append(result, map[string]interface{}{
+				"target":        p.Target,
+				"min_rung":      p.MinRung,
+				"hops":          len(p.Hops),
+				"feature_id":    p.FeatureID,
+				"negotiated_at": p.NegotiatedAt,
+			})
+		}
+	}
+
+	return map[string]interface{}{"paths": result}, nil
+}
+
+// peerRungFromResult extracts a trust rung from a callPeerMCP result if present.
+func peerRungFromResult(res map[string]interface{}) int {
+	if r, ok := res["rung"].(float64); ok {
+		return int(r)
+	}
+	return 0
+}
+
+// isVerified returns true if a challenge result has verified=true.
+func isVerified(res map[string]interface{}) bool {
+	v, _ := res["verified"].(bool)
+	return v
+}
+
+// safeReceipt extracts the receipt string from a challenge result.
+func safeReceipt(res map[string]interface{}) string {
+	r, _ := res["receipt"].(string)
+	return r
+}
+
+// findEndpointInPeers searches an adhd.isotope.peers result for a named isotope's endpoint.
+func findEndpointInPeers(topology map[string]interface{}, name string) string {
+	peers, _ := topology["peers"].([]interface{})
+	for _, p := range peers {
+		pm, ok := p.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if pm["name"] == name {
+			endpoint, _ := pm["endpoint"].(string)
+			return endpoint
+		}
+	}
+	return ""
 }
 
 // registerProjectTool registers an adhd.project.<name>.call dynamic tool that

@@ -22,11 +22,12 @@ const (
 
 // IsotopePeer represents a discovered ADHD isotope
 type IsotopePeer struct {
-	Name     string      `json:"name"`
-	Role     IsotopeRole `json:"role"`
-	Endpoint string      `json:"endpoint"`
-	Status   string      `json:"status"`
-	LastSeen time.Time   `json:"last_seen"`
+	Name      string      `json:"name"`
+	Role      IsotopeRole `json:"role"`
+	Endpoint  string      `json:"endpoint"`
+	Status    string      `json:"status"`
+	TrustRung int         `json:"trust_rung"` // 42i certification rung; 0 if unknown
+	LastSeen  time.Time   `json:"last_seen"`
 }
 
 // IsotopeTopology describes the current topology state
@@ -78,12 +79,19 @@ func DiscoverIsotopes(ctx context.Context, smokeAlarmURL string) ([]IsotopePeer,
 			continue
 		}
 
+		trustRung := 0
+		if iso.Metadata != nil {
+			if r, ok := iso.Metadata["trust_rung"].(float64); ok {
+				trustRung = int(r)
+			}
+		}
 		peers = append(peers, IsotopePeer{
-			Name:     iso.Name,
-			Role:     IsotopeRole(iso.Role),
-			Endpoint: iso.Endpoint,
-			Status:   iso.Status,
-			LastSeen: time.Now(),
+			Name:      iso.Name,
+			Role:      IsotopeRole(iso.Role),
+			Endpoint:  iso.Endpoint,
+			Status:    iso.Status,
+			TrustRung: trustRung,
+			LastSeen:  time.Now(),
 		})
 	}
 

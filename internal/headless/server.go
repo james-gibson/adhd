@@ -288,10 +288,11 @@ func (s *Server) GetTopologyInfo() map[string]interface{} {
 		// If we have a message queue, we're prime-plus with a known prime
 		if s.primeAddr != "" {
 			peers = append(peers, map[string]interface{}{
-				"name":     "prime",
-				"role":     "prime",
-				"endpoint": s.primeAddr,
-				"status":   "active",
+				"name":       "prime",
+				"role":       "prime",
+				"endpoint":   s.primeAddr,
+				"status":     "active",
+				"trust_rung": s.trustLevel,
 			})
 		}
 	}
