@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/james-gibson/adhd/internal/config"
@@ -32,6 +34,14 @@ type ReceiptVerifier func(receipt, featureID, nonce string) bool
 // the new cluster's smoke-alarm endpoints into the running watcher.
 type ClusterJoinHandler func(name, alarmA, alarmB string) error
 
+// dynamicTool is a runtime-registered MCP tool added when a cluster joins.
+type dynamicTool struct {
+	name        string
+	description string
+	inputSchema map[string]interface{}
+	handler     func(ctx context.Context, params interface{}) (interface{}, *jsonrpcError)
+}
+
 // Server hosts an MCP-compatible endpoint exposing dashboard lights
 type Server struct {
 	config             config.MCPServerConfig
@@ -47,6 +57,10 @@ type Server struct {
 	instanceIsotope string
 	receiptComputer ReceiptComputer
 	receiptVerifier ReceiptVerifier
+
+	// Dynamic per-repo tools registered on cluster join.
+	mu           sync.RWMutex
+	dynamicTools []*dynamicTool
 }
 
 // NewServer creates an MCP server
@@ -186,10 +200,30 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 	case "adhd.hurl.run":
 		result, respErr = s.handleHurlRun(r.Context(), req.Params)
 
+	case "adhd.gh.run":
+		result, respErr = s.handleGHRun(r.Context(), req.Params)
+
+	case "adhd.dependabot.alerts":
+		result, respErr = s.handleDependabotAlerts(r.Context(), req.Params)
+
 	default:
-		respErr = &jsonrpcError{
-			Code:    -32601,
-			Message: fmt.Sprintf("Method not found: %s", req.Method),
+		// Check runtime-registered per-repo tools.
+		s.mu.RLock()
+		var dynHandler func(context.Context, interface{}) (interface{}, *jsonrpcError)
+		for _, t := range s.dynamicTools {
+			if t.name == req.Method {
+				dynHandler = t.handler
+				break
+			}
+		}
+		s.mu.RUnlock()
+		if dynHandler != nil {
+			result, respErr = dynHandler(r.Context(), req.Params)
+		} else {
+			respErr = &jsonrpcError{
+				Code:    -32601,
+				Message: fmt.Sprintf("Method not found: %s", req.Method),
+			}
 		}
 	}
 
@@ -247,170 +281,224 @@ func (s *Server) handleInitialize() interface{} {
 	}
 }
 
-// handleToolsList returns available tools
+// handleToolsList returns available tools (static + runtime-registered per-repo tools)
 func (s *Server) handleToolsList() interface{} {
-	return map[string]interface{}{
-		"tools": []map[string]interface{}{
-			{
-				"name":        "adhd.status",
-				"description": "Get dashboard status summary (lights count by status)",
-				"inputSchema": map[string]interface{}{
-					"type":       "object",
-					"properties": map[string]interface{}{},
-				},
+	static := []map[string]interface{}{
+		{
+			"name":        "adhd.status",
+			"description": "Get dashboard status summary (lights count by status)",
+			"inputSchema": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
 			},
-			{
-				"name":        "adhd.lights.list",
-				"description": "List all lights with their current status",
-				"inputSchema": map[string]interface{}{
-					"type":       "object",
-					"properties": map[string]interface{}{},
-				},
+		},
+		{
+			"name":        "adhd.lights.list",
+			"description": "List all lights with their current status",
+			"inputSchema": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
 			},
-			{
-				"name":        "adhd.lights.get",
-				"description": "Get a specific light by name",
-				"inputSchema": map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"name": map[string]interface{}{
-							"type":        "string",
-							"description": "Light name",
-						},
+		},
+		{
+			"name":        "adhd.lights.get",
+			"description": "Get a specific light by name",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "Light name",
 					},
-					"required": []string{"name"},
 				},
+				"required": []string{"name"},
 			},
-			{
-				"name":        "adhd.isotope.status",
-				"description": "Get this isotope's role and topology status",
-				"inputSchema": map[string]interface{}{
-					"type":       "object",
-					"properties": map[string]interface{}{},
-				},
+		},
+		{
+			"name":        "adhd.isotope.status",
+			"description": "Get this isotope's role and topology status",
+			"inputSchema": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
 			},
-			{
-				"name":        "adhd.isotope.peers",
-				"description": "Get list of discovered peer ADHD isotopes",
-				"inputSchema": map[string]interface{}{
-					"type":       "object",
-					"properties": map[string]interface{}{},
-				},
+		},
+		{
+			"name":        "adhd.isotope.peers",
+			"description": "Get list of discovered peer ADHD isotopes",
+			"inputSchema": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
 			},
-			{
-				"name":        "adhd.isotope.instance",
-				"description": "Get this instance's public isotope identifier for rung validation",
-				"inputSchema": map[string]interface{}{
-					"type":       "object",
-					"properties": map[string]interface{}{},
-				},
+		},
+		{
+			"name":        "adhd.isotope.instance",
+			"description": "Get this instance's public isotope identifier for rung validation",
+			"inputSchema": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
 			},
-			{
-				"name":        "adhd.rung.respond",
-				"description": "Respond to a rung validation challenge by computing a receipt",
-				"inputSchema": map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"feature_id": map[string]interface{}{
-							"type":        "string",
-							"description": "Feature ID being validated",
-						},
-						"nonce": map[string]interface{}{
-							"type":        "string",
-							"description": "Fresh nonce from the challenger",
-						},
+		},
+		{
+			"name":        "adhd.rung.respond",
+			"description": "Respond to a rung validation challenge by computing a receipt",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"feature_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Feature ID being validated",
 					},
-					"required": []string{"feature_id", "nonce"},
-				},
-			},
-			{
-				"name":        "adhd.rung.verify",
-				"description": "Verify a receipt submitted in response to a rung challenge",
-				"inputSchema": map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"receipt": map[string]interface{}{
-							"type":        "string",
-							"description": "Receipt to verify",
-						},
-						"feature_id": map[string]interface{}{
-							"type":        "string",
-							"description": "Feature ID from the original challenge",
-						},
-						"nonce": map[string]interface{}{
-							"type":        "string",
-							"description": "Nonce from the original challenge",
-						},
+					"nonce": map[string]interface{}{
+						"type":        "string",
+						"description": "Fresh nonce from the challenger",
 					},
-					"required": []string{"receipt", "feature_id", "nonce"},
 				},
+				"required": []string{"feature_id", "nonce"},
 			},
-			{
-				"name":        "adhd.rung.challenge",
-				"description": "Issue a rung validation challenge to a peer ADHD instance",
-				"inputSchema": map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"target_url": map[string]interface{}{
-							"type":        "string",
-							"description": "Base URL of the peer MCP server (e.g. http://localhost:9001)",
-						},
-						"feature_id": map[string]interface{}{
-							"type":        "string",
-							"description": "Feature ID to challenge the peer on",
-						},
-						"nonce": map[string]interface{}{
-							"type":        "string",
-							"description": "Fresh nonce for this challenge",
-						},
+		},
+		{
+			"name":        "adhd.rung.verify",
+			"description": "Verify a receipt submitted in response to a rung challenge",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"receipt": map[string]interface{}{
+						"type":        "string",
+						"description": "Receipt to verify",
 					},
-					"required": []string{"target_url", "feature_id", "nonce"},
+					"feature_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Feature ID from the original challenge",
+					},
+					"nonce": map[string]interface{}{
+						"type":        "string",
+						"description": "Nonce from the original challenge",
+					},
 				},
+				"required": []string{"receipt", "feature_id", "nonce"},
 			},
-			{
-				"name":        "adhd.cluster.join",
-				"description": "Notify this ADHD instance that a new lezz demo cluster has joined the registry",
-				"inputSchema": map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"name": map[string]interface{}{
-							"type":        "string",
-							"description": "Cluster name",
-						},
-						"alarm_a": map[string]interface{}{
-							"type":        "string",
-							"description": "HTTP URL of the cluster primary smoke-alarm",
-						},
-						"alarm_b": map[string]interface{}{
-							"type":        "string",
-							"description": "HTTP URL of the cluster secondary smoke-alarm",
-						},
+		},
+		{
+			"name":        "adhd.rung.challenge",
+			"description": "Issue a rung validation challenge to a peer ADHD instance",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"target_url": map[string]interface{}{
+						"type":        "string",
+						"description": "Base URL of the peer MCP server (e.g. http://localhost:9001)",
 					},
-					"required": []string{"name"},
+					"feature_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Feature ID to challenge the peer on",
+					},
+					"nonce": map[string]interface{}{
+						"type":        "string",
+						"description": "Fresh nonce for this challenge",
+					},
 				},
+				"required": []string{"target_url", "feature_id", "nonce"},
 			},
-			{
-				"name":        "adhd.hurl.run",
-				"description": "Run a hurl HTTP test script and return pass/fail with output. hurl must be installed.",
-				"inputSchema": map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"script": map[string]interface{}{
-							"type":        "string",
-							"description": "Hurl script content (HTTP requests with optional assertions)",
-						},
-						"certify_domain": map[string]interface{}{
-							"type":        "string",
-							"description": "If set and the script passes, emit CapabilityVerifiedMsg for this domain",
-						},
+		},
+		{
+			"name":        "adhd.cluster.join",
+			"description": "Notify this ADHD instance that a new lezz demo cluster has joined the registry",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "Cluster name",
 					},
-					"required": []string{"script"},
+					"alarm_a": map[string]interface{}{
+						"type":        "string",
+						"description": "HTTP URL of the cluster primary smoke-alarm",
+					},
+					"alarm_b": map[string]interface{}{
+						"type":        "string",
+						"description": "HTTP URL of the cluster secondary smoke-alarm",
+					},
+					"github_repos": map[string]interface{}{
+						"type":        "array",
+						"description": "GitHub repo slugs owned by this cluster (e.g. owner/name)",
+						"items":       map[string]interface{}{"type": "string"},
+					},
 				},
+				"required": []string{"name"},
+			},
+		},
+		{
+			"name":        "adhd.hurl.run",
+			"description": "Run a hurl HTTP test script and return pass/fail with output. hurl must be installed.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"script": map[string]interface{}{
+						"type":        "string",
+						"description": "Hurl script content (HTTP requests with optional assertions)",
+					},
+					"certify_domain": map[string]interface{}{
+						"type":        "string",
+						"description": "If set and the script passes, emit CapabilityVerifiedMsg for this domain",
+					},
+				},
+				"required": []string{"script"},
+			},
+		},
+		{
+			"name":        "adhd.gh.run",
+			"description": "Run a gh CLI command and return its output. GitHub CLI must be installed and authenticated.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"args": map[string]interface{}{
+						"type":        "array",
+						"description": `Arguments to pass to gh (e.g. ["api", "repos/owner/repo/dependabot/alerts"])`,
+						"items":       map[string]interface{}{"type": "string"},
+					},
+					"timeout_seconds": map[string]interface{}{
+						"type":        "number",
+						"description": "Timeout in seconds (default: 30)",
+					},
+				},
+				"required": []string{"args"},
+			},
+		},
+		{
+			"name":        "adhd.dependabot.alerts",
+			"description": "Fetch Dependabot security alerts for a GitHub repository via the gh CLI.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"repo": map[string]interface{}{
+						"type":        "string",
+						"description": "Repository slug (e.g. owner/name)",
+					},
+					"state": map[string]interface{}{
+						"type":        "string",
+						"description": "Alert state filter: open, dismissed, auto_dismissed, fixed (default: open)",
+					},
+				},
+				"required": []string{"repo"},
 			},
 		},
 	}
-}
 
+	s.mu.RLock()
+	dynTools := make([]map[string]interface{}, 0, len(s.dynamicTools))
+	for _, t := range s.dynamicTools {
+		dynTools = append(dynTools, map[string]interface{}{
+			"name":        t.name,
+			"description": t.description,
+			"inputSchema": t.inputSchema,
+		})
+	}
+	s.mu.RUnlock()
+
+	return map[string]interface{}{
+		"tools": append(static, dynTools...),
+	}
+}
 // handleStatus returns dashboard summary
 func (s *Server) handleStatus() interface{} {
 	allLights := s.cluster.All()
@@ -638,8 +726,22 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 	if err := s.clusterJoinHandler(p["name"], alarmA, alarmB); err != nil {
 		return nil, &jsonrpcError{Code: -32000, Message: "cluster join failed: " + err.Error()}
 	}
-	slog.Info("adhd.cluster.join accepted", "name", p["name"], "alarm_a", alarmA, "alarm_b", alarmB)
-	return map[string]interface{}{"accepted": true, "name": p["name"]}, nil
+
+	// Register per-repo Dependabot tools for any GitHub repos in this cluster.
+	var repoCount int
+	if reposRaw, ok := m["github_repos"]; ok {
+		if reposSlice, ok := reposRaw.([]interface{}); ok {
+			for _, r := range reposSlice {
+				if slug, ok := r.(string); ok && slug != "" {
+					s.registerRepoTool(p["name"], slug)
+					repoCount++
+				}
+			}
+		}
+	}
+
+	slog.Info("adhd.cluster.join accepted", "name", p["name"], "alarm_a", alarmA, "alarm_b", alarmB, "repos", repoCount)
+	return map[string]interface{}{"accepted": true, "name": p["name"], "repos_registered": repoCount}, nil
 }
 
 // handleHurlRun executes a hurl script and returns pass/fail with output.
@@ -694,6 +796,171 @@ func (s *Server) handleHurlRun(ctx context.Context, params interface{}) (interfa
 
 	slog.Debug("adhd.hurl.run", "passed", passed, "certify_domain", certifyDomain)
 	return result, nil
+}
+
+// handleGHRun executes a gh CLI command and returns its combined output.
+// The gh CLI must be installed and authenticated (gh auth login).
+func (s *Server) handleGHRun(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
+	m, ok := params.(map[string]interface{})
+	if !ok {
+		return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
+	}
+	argsRaw, ok := m["args"]
+	if !ok {
+		return nil, &jsonrpcError{Code: -32602, Message: "args is required"}
+	}
+	argsSlice, ok := argsRaw.([]interface{})
+	if !ok {
+		return nil, &jsonrpcError{Code: -32602, Message: "args must be an array"}
+	}
+	args := make([]string, 0, len(argsSlice))
+	for i, a := range argsSlice {
+		s, ok := a.(string)
+		if !ok {
+			return nil, &jsonrpcError{Code: -32602, Message: fmt.Sprintf("args[%d] must be a string", i)}
+		}
+		args = append(args, s)
+	}
+
+	ghPath, err := exec.LookPath("gh")
+	if err != nil {
+		return nil, &jsonrpcError{Code: -32000, Message: "gh CLI not found on PATH — install GitHub CLI (https://cli.github.com)"}
+	}
+
+	timeoutSec := 30
+	if ts, ok := m["timeout_seconds"].(float64); ok && ts > 0 {
+		timeoutSec = int(ts)
+	}
+	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(runCtx, ghPath, args...) //nolint:gosec
+	out, runErr := cmd.CombinedOutput()
+	exitCode := 0
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = -1
+		}
+	}
+
+	slog.Debug("adhd.gh.run", "args", args, "exit_code", exitCode)
+	return map[string]interface{}{
+		"output":    string(out),
+		"exit_code": exitCode,
+		"success":   exitCode == 0,
+	}, nil
+}
+
+// handleDependabotAlerts fetches Dependabot alerts for a repo via the gh CLI.
+func (s *Server) handleDependabotAlerts(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
+	m, ok := params.(map[string]interface{})
+	if !ok {
+		return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
+	}
+	repo, _ := m["repo"].(string)
+	if repo == "" {
+		return nil, &jsonrpcError{Code: -32602, Message: "repo is required (e.g. owner/name)"}
+	}
+	state := "open"
+	if st, ok := m["state"].(string); ok && st != "" {
+		state = st
+	}
+	return s.fetchDependabotAlerts(ctx, repo, state)
+}
+
+// fetchDependabotAlerts calls gh api to retrieve Dependabot alerts and returns a structured summary.
+func (s *Server) fetchDependabotAlerts(ctx context.Context, repo, state string) (interface{}, *jsonrpcError) {
+	ghPath, err := exec.LookPath("gh")
+	if err != nil {
+		return nil, &jsonrpcError{Code: -32000, Message: "gh CLI not found on PATH"}
+	}
+
+	apiPath := fmt.Sprintf("repos/%s/dependabot/alerts", repo)
+	args := []string{"api", apiPath, "--paginate", "-f", "state=" + state}
+
+	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(runCtx, ghPath, args...) //nolint:gosec
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		return nil, &jsonrpcError{Code: -32000, Message: "gh api failed: " + strings.TrimSpace(string(out))}
+	}
+
+	var rawAlerts []map[string]interface{}
+	if err := json.Unmarshal(out, &rawAlerts); err != nil {
+		return nil, &jsonrpcError{Code: -32000, Message: "parse alerts: " + err.Error()}
+	}
+
+	alerts := make([]map[string]interface{}, 0, len(rawAlerts))
+	for _, a := range rawAlerts {
+		alert := map[string]interface{}{
+			"number": a["number"],
+			"state":  a["state"],
+			"url":    a["html_url"],
+		}
+		if dep, ok := a["dependency"].(map[string]interface{}); ok {
+			if pkg, ok := dep["package"].(map[string]interface{}); ok {
+				alert["package"] = pkg["name"]
+				alert["ecosystem"] = pkg["ecosystem"]
+			}
+		}
+		if sa, ok := a["security_advisory"].(map[string]interface{}); ok {
+			alert["severity"] = sa["severity"]
+			alert["summary"] = sa["summary"]
+			alert["cve"] = sa["cve_id"]
+		}
+		alerts = append(alerts, alert)
+	}
+
+	slog.Debug("adhd.dependabot.alerts", "repo", repo, "state", state, "count", len(alerts))
+	return map[string]interface{}{
+		"repo":   repo,
+		"count":  len(alerts),
+		"alerts": alerts,
+	}, nil
+}
+
+// registerRepoTool registers a per-repo adhd.dependabot.<owner>.<repo> tool for
+// a cluster that owns the given GitHub repo slug (e.g. "james-gibson/adhd").
+// Duplicate registrations are silently ignored.
+func (s *Server) registerRepoTool(clusterName, slug string) {
+	safeName := strings.ReplaceAll(slug, "/", ".")
+	toolName := "adhd.dependabot." + safeName
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.dynamicTools {
+		if t.name == toolName {
+			return
+		}
+	}
+	capturedSlug := slug
+	s.dynamicTools = append(s.dynamicTools, &dynamicTool{
+		name:        toolName,
+		description: fmt.Sprintf("Fetch Dependabot alerts for %s (cluster: %s). Requires gh CLI.", slug, clusterName),
+		inputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"state": map[string]interface{}{
+					"type":        "string",
+					"description": "Alert state filter: open, dismissed, auto_dismissed, fixed (default: open)",
+				},
+			},
+		},
+		handler: func(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
+			state := "open"
+			if m, ok := params.(map[string]interface{}); ok {
+				if st, ok := m["state"].(string); ok && st != "" {
+					state = st
+				}
+			}
+			return s.fetchDependabotAlerts(ctx, capturedSlug, state)
+		},
+	})
+	slog.Info("registered per-repo tool", "tool", toolName, "cluster", clusterName)
 }
 
 // callPeerMCP sends a single JSON-RPC call to a peer MCP server and returns

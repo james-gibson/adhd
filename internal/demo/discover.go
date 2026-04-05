@@ -30,10 +30,11 @@ const (
 
 // ClusterInfo mirrors the JSON published by lezz demo's /cluster endpoint.
 type ClusterInfo struct {
-	Name    string `json:"name"`
-	AlarmA  string `json:"alarm_a"`
-	AlarmB  string `json:"alarm_b"`
-	AdhdMCP string `json:"adhd_mcp"`
+	Name        string   `json:"name"`
+	AlarmA      string   `json:"alarm_a"`
+	AlarmB      string   `json:"alarm_b"`
+	AdhdMCP     string   `json:"adhd_mcp"`
+	GithubRepos []string `json:"github_repos,omitempty"`
 }
 
 // Browse browses the LAN for a lezz demo registry and returns all registered
