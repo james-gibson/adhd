@@ -352,9 +352,9 @@ func TestServerToolsList(t *testing.T) {
 		t.Fatal("tools is not an array")
 	}
 
-	// Should have 5 ADHD tools (status, lights.list, lights.get, isotope.status, isotope.peers)
-	if len(tools) != 5 {
-		t.Errorf("expected 5 tools, got %d", len(tools))
+	// Should have 10 ADHD tools
+	if len(tools) != 10 {
+		t.Errorf("expected 10 tools, got %d", len(tools))
 	}
 
 	// Verify tool names
@@ -370,9 +370,13 @@ func TestServerToolsList(t *testing.T) {
 	}
 
 	expectedTools := map[string]bool{
-		"adhd.status":       true,
-		"adhd.lights.list":  true,
-		"adhd.lights.get":   true,
+		"adhd.status":            true,
+		"adhd.lights.list":       true,
+		"adhd.lights.get":        true,
+		"adhd.isotope.instance":  true,
+		"adhd.rung.respond":      true,
+		"adhd.rung.verify":       true,
+		"adhd.rung.challenge":    true,
 	}
 
 	for expected := range expectedTools {
@@ -605,5 +609,97 @@ func TestServerStatusSummaryAllStatuses(t *testing.T) {
 	}
 	if int(summary["dark"].(float64)) != 1 {
 		t.Error("incorrect dark count")
+	}
+}
+
+// TestRungValidationInstanceIsotope verifies adhd.isotope.instance returns a stable isotope
+func TestRungValidationInstanceIsotope(t *testing.T) {
+	cluster := lights.NewCluster()
+	addr := freeAddr(t)
+	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
+	server := NewServer(cfg, cluster)
+
+	isotope := "test-isotope-abc123"
+	server.SetInstanceIdentity(isotope,
+		func(featureID, nonce string) string { return "receipt:" + featureID + ":" + nonce },
+		func(receipt, featureID, nonce string) bool { return receipt == "receipt:"+featureID+":"+nonce },
+	)
+
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Shutdown(context.Background()) }()
+	time.Sleep(50 * time.Millisecond)
+
+	result := doJSONRPCCall(t, addr, "adhd.isotope.instance", nil)
+	resultMap, ok := result["result"].(map[string]interface{})
+	if !ok {
+		t.Fatal("result is not an object")
+	}
+	got, ok := resultMap["isotope"].(string)
+	if !ok || got != isotope {
+		t.Errorf("expected isotope %q, got %v", isotope, resultMap["isotope"])
+	}
+}
+
+// TestRungValidationRespondAndVerify verifies the respond/verify round-trip
+func TestRungValidationRespondAndVerify(t *testing.T) {
+	cluster := lights.NewCluster()
+	addr := freeAddr(t)
+	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
+	server := NewServer(cfg, cluster)
+
+	server.SetInstanceIdentity("isotope-x",
+		func(featureID, nonce string) string { return "RECEIPT:" + featureID + ":" + nonce },
+		func(receipt, featureID, nonce string) bool { return receipt == "RECEIPT:"+featureID+":"+nonce },
+	)
+
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Shutdown(context.Background()) }()
+	time.Sleep(50 * time.Millisecond)
+
+	// Respond to a challenge
+	respondResult := doJSONRPCCall(t, addr, "adhd.rung.respond", map[string]interface{}{
+		"feature_id": "adhd/lights-status",
+		"nonce":      "nonce-001",
+	})
+	respondMap, ok := respondResult["result"].(map[string]interface{})
+	if !ok {
+		t.Fatal("respond result is not an object")
+	}
+	receipt, _ := respondMap["receipt"].(string)
+	if receipt == "" {
+		t.Fatal("respond returned empty receipt")
+	}
+
+	// Verify the receipt
+	verifyResult := doJSONRPCCall(t, addr, "adhd.rung.verify", map[string]interface{}{
+		"receipt":    receipt,
+		"feature_id": "adhd/lights-status",
+		"nonce":      "nonce-001",
+	})
+	verifyMap, ok := verifyResult["result"].(map[string]interface{})
+	if !ok {
+		t.Fatal("verify result is not an object")
+	}
+	valid, _ := verifyMap["valid"].(bool)
+	if !valid {
+		t.Error("expected valid=true for correct receipt")
+	}
+
+	// Verify with wrong nonce — must fail
+	replayResult := doJSONRPCCall(t, addr, "adhd.rung.verify", map[string]interface{}{
+		"receipt":    receipt,
+		"feature_id": "adhd/lights-status",
+		"nonce":      "different-nonce",
+	})
+	replayMap, ok := replayResult["result"].(map[string]interface{})
+	if !ok {
+		t.Fatal("replay verify result is not an object")
+	}
+	if replayMap["valid"].(bool) {
+		t.Error("expected valid=false for replayed receipt with different nonce")
 	}
 }

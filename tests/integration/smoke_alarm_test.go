@@ -184,7 +184,9 @@ done:
 	}
 }
 
-// TestSmokeAlarmDeduplication verifies no duplicate updates for unchanged state
+// TestSmokeAlarmDeduplication verifies target-level updates are deduplicated for
+// unchanged state. Instance-level heartbeat updates are still emitted every poll
+// cycle to keep the Bubble Tea waitForLightUpdate command pipeline alive.
 func TestSmokeAlarmDeduplication(t *testing.T) {
 	server, _ := MockSmokeAlarmServer(t, []mockTargetStatus{
 		{
@@ -207,24 +209,30 @@ func TestSmokeAlarmDeduplication(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 
-	updates := make(chan smokelink.LightUpdate, 10)
+	updates := make(chan smokelink.LightUpdate, 32)
 	watcher.Start(ctx, updates)
 
-	// Collect all updates
-	count := 0
+	var targetUpdates, heartbeats int
 	for {
 		select {
-		case <-updates:
-			count++
+		case u := <-updates:
+			if u.IsInstance {
+				heartbeats++
+			} else if len(u.RemoteFeatures) == 0 {
+				targetUpdates++
+			}
 		case <-ctx.Done():
 			goto done
 		}
 	}
 done:
-
-	// Should receive only 1 update (initial discovery), not multiple due to polling
-	if count > 1 {
-		t.Errorf("got %d updates, expected 1 (deduplicated)", count)
+	// Target-level updates must be deduplicated.
+	if targetUpdates != 1 {
+		t.Errorf("target updates: got %d, want 1 (deduplicated)", targetUpdates)
+	}
+	// Heartbeats must arrive on every poll to keep the Bubble Tea pipeline alive.
+	if heartbeats < 2 {
+		t.Errorf("heartbeat updates: got %d, want ≥2 (one per poll cycle)", heartbeats)
 	}
 }
 

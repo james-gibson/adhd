@@ -1,11 +1,16 @@
 package dashboard
 
 import (
+	"context"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/james-gibson/adhd/internal/config"
+	"github.com/james-gibson/adhd/internal/demo"
 	"github.com/james-gibson/adhd/internal/discovery"
 	"github.com/james-gibson/adhd/internal/lights"
 	"github.com/james-gibson/adhd/internal/smokelink"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // CapabilityVerifiedMsg is delivered when a runtime capability has been
@@ -48,6 +53,67 @@ func waitForLightUpdate(ch <-chan smokelink.LightUpdate) tea.Cmd {
 			return nil
 		}
 		return update
+	}
+}
+
+// ClusterRegistryUpdateMsg is delivered when the lezz demo cluster registry
+// at /cluster has new entries since the last poll. NewEndpoints contains the
+// SmokeAlarmEndpoints derived from newly-seen clusters; NewNames is the list
+// of cluster names that should be marked as known after this update.
+type ClusterRegistryUpdateMsg struct {
+	NewEndpoints []config.SmokeAlarmEndpoint
+	NewNames     []string
+	RegistryURL  string
+}
+
+// pollClusterRegistry returns a Cmd that sleeps for registryPollInterval, then
+// fetches the /cluster registry and returns a ClusterRegistryUpdateMsg with any
+// clusters that are not already in knownNames. Re-arm it after every delivery.
+//
+// The knownNames map is copied by value so it is safe to pass m.knownClusterNames
+// directly — mutations in Update() don't race with the blocking goroutine.
+const registryPollInterval = 5 * time.Second
+
+func pollClusterRegistry(registryURL string, knownNames map[string]bool) tea.Cmd {
+	// Snapshot current known names so the goroutine carries its own copy.
+	snapshot := make(map[string]bool, len(knownNames))
+	for k := range knownNames {
+		snapshot[k] = true
+	}
+	return func() tea.Msg {
+		time.Sleep(registryPollInterval)
+		clusters, err := demo.FetchRegistry(context.Background(), registryURL)
+		if err != nil {
+			// Registry temporarily unreachable — re-arm with no new endpoints.
+			return ClusterRegistryUpdateMsg{RegistryURL: registryURL}
+		}
+		var newEndpoints []config.SmokeAlarmEndpoint
+		var newNames []string
+		for _, c := range clusters {
+			if snapshot[c.Name] {
+				continue
+			}
+			newNames = append(newNames, c.Name)
+			if c.AlarmA != "" {
+				newEndpoints = append(newEndpoints, config.SmokeAlarmEndpoint{
+					Name:     c.Name + "/alarm-a",
+					Endpoint: c.AlarmA,
+					Interval: 10 * time.Second,
+				})
+			}
+			if c.AlarmB != "" {
+				newEndpoints = append(newEndpoints, config.SmokeAlarmEndpoint{
+					Name:     c.Name + "/alarm-b",
+					Endpoint: c.AlarmB,
+					Interval: 10 * time.Second,
+				})
+			}
+		}
+		return ClusterRegistryUpdateMsg{
+			NewEndpoints: newEndpoints,
+			NewNames:     newNames,
+			RegistryURL:  registryURL,
+		}
 	}
 }
 

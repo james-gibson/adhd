@@ -138,6 +138,12 @@ func ConfigFromClusters(clusters []ClusterInfo) *config.Config {
 	return cfg
 }
 
+// FetchRegistry retrieves all registered clusters from a /cluster endpoint.
+// Safe to call repeatedly — used by the dashboard to poll for newly-joined clusters.
+func FetchRegistry(ctx context.Context, url string) ([]ClusterInfo, error) {
+	return fetchRegistry(ctx, url)
+}
+
 // fetchRegistry retrieves the full cluster registry from a /cluster endpoint.
 func fetchRegistry(ctx context.Context, url string) ([]ClusterInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)

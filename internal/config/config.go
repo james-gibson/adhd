@@ -109,8 +109,6 @@ func DefaultConfig() *Config {
 		Features: FeaturesConfig{
 			SearchPaths: []string{
 				"features/adhd/",
-				"../ocd-smoke-alarm/features/",
-				"../fire-marshal/features/",
 			},
 			Binaries: []Binary{},
 		},

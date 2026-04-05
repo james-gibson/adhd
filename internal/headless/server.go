@@ -25,6 +25,7 @@ type Server struct {
 	cluster      *lights.Cluster
 	mcpServer    *mcpserver.Server
 	smokeWatcher *smokelink.Watcher
+	watchUpdates chan smokelink.LightUpdate // receives watcher events; set in Start()
 	logFile      *os.File
 	msgQueue     *MessageQueue
 	isPrimePlus  bool
@@ -32,6 +33,7 @@ type Server struct {
 	primeAddr    string
 	trustLevel   int
 	zeroconfSrv  isotope.Server
+	identity     isotope.InstanceIdentity
 	mu           sync.Mutex
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -76,11 +78,12 @@ func New(cfg *config.Config) *Server {
 	}
 
 	return &Server{
-		cfg:     cfg,
-		cluster: cluster,
-		ctx:     ctx,
-		cancel:  cancel,
-		role:    RoleStandalone, // Default role until configured
+		cfg:      cfg,
+		cluster:  cluster,
+		ctx:      ctx,
+		cancel:   cancel,
+		role:     RoleStandalone, // Default role until configured
+		identity: isotope.NewInstanceIdentity(),
 	}
 }
 
@@ -164,6 +167,13 @@ func (s *Server) Start(logPath string) error {
 		// Accept pushed logs from prime-plus isotopes
 		s.mcpServer.SetPushLogsHandler(s.handleIncomingPushLogs)
 
+		// Wire rung validation identity — each instance has a unique secret
+		s.mcpServer.SetInstanceIdentity(
+			s.identity.Isotope,
+			s.identity.ComputeReceipt,
+			s.identity.VerifyReceipt,
+		)
+
 		// Install traffic logging middleware before starting
 		s.mcpServer.SetMiddleware(s.trafficLoggingMiddleware())
 
@@ -173,13 +183,19 @@ func (s *Server) Start(logPath string) error {
 		slog.Info("MCP server started", "addr", s.cfg.MCPServer.Addr)
 	}
 
-	// Start smoke-alarm watcher if endpoints are configured
+	// Start smoke-alarm watcher. Always create it so the cluster-join handler
+	// can add endpoints at runtime even when no initial endpoints are configured.
+	s.smokeWatcher = smokelink.NewWatcher(s.cfg.SmokeAlarm)
+	s.watchUpdates = make(chan smokelink.LightUpdate, 32)
+	s.smokeWatcher.Start(s.ctx, s.watchUpdates)
+	go s.drainWatcherUpdates(s.watchUpdates)
 	if len(s.cfg.SmokeAlarm) > 0 {
-		s.smokeWatcher = smokelink.NewWatcher(s.cfg.SmokeAlarm)
-		updates := make(chan smokelink.LightUpdate, 32)
-		s.smokeWatcher.Start(s.ctx, updates)
-		go s.drainWatcherUpdates(updates)
 		slog.Info("smoke-alarm watcher started", "endpoints", len(s.cfg.SmokeAlarm))
+	}
+
+	// Wire cluster-join handler so lezz demo can push new endpoints via MCP.
+	if s.mcpServer != nil {
+		s.mcpServer.SetClusterJoinHandler(s.handleClusterJoin)
 	}
 
 	return nil
@@ -195,6 +211,16 @@ func (s *Server) drainWatcherUpdates(ch <-chan smokelink.LightUpdate) {
 		case upd, ok := <-ch:
 			if !ok {
 				return
+			}
+			// Skip heartbeat updates (IsInstance=true, empty TargetID) — they exist
+			// only to keep the Bubble Tea command pipeline alive in TUI mode and
+			// carry no cluster state for headless mode.
+			if upd.IsInstance {
+				continue
+			}
+			// Skip remote-feature batches — handled by TUI only.
+			if len(upd.RemoteFeatures) > 0 {
+				continue
 			}
 			// Apply to cluster
 			lightName := "smoke:" + upd.SourceName + "/" + upd.TargetID
@@ -231,6 +257,28 @@ func (s *Server) drainWatcherUpdates(ch <-chan smokelink.LightUpdate) {
 }
 
 // GetTopologyInfo returns current topology information for MCP queries
+// handleClusterJoin wires a newly-joined lezz demo cluster's smoke-alarm
+// endpoints into the running watcher so their health updates flow into the
+// headless cluster immediately — no wait for the next poll cycle.
+func (s *Server) handleClusterJoin(name, alarmA, alarmB string) error {
+	prefix := name + "/"
+	if alarmA != "" {
+		s.smokeWatcher.WatchEndpoint(s.ctx, config.SmokeAlarmEndpoint{
+			Name:     prefix + "alarm-a",
+			Endpoint: alarmA,
+			Interval: 10 * time.Second,
+		}, s.watchUpdates)
+	}
+	if alarmB != "" {
+		s.smokeWatcher.WatchEndpoint(s.ctx, config.SmokeAlarmEndpoint{
+			Name:     prefix + "alarm-b",
+			Endpoint: alarmB,
+			Interval: 10 * time.Second,
+		}, s.watchUpdates)
+	}
+	return nil
+}
+
 func (s *Server) GetTopologyInfo() map[string]interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()

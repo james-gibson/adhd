@@ -123,9 +123,9 @@ func TestFireMarshalToolsListADHD(t *testing.T) {
 		t.Fatal("tools is not an array")
 	}
 
-	// Verify 5 ADHD tools (status, lights.list, lights.get, isotope.status, isotope.peers)
-	if len(tools) != 5 {
-		t.Errorf("expected 5 tools, got %d", len(tools))
+	// Verify 10 ADHD tools
+	if len(tools) != 10 {
+		t.Errorf("expected 10 tools, got %d", len(tools))
 		return
 	}
 

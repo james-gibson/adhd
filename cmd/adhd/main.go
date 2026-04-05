@@ -145,13 +145,21 @@ func main() {
 		d := dashboard.NewBubbleTeaDashboard(cfg)
 
 		// If the config was built from a lezz demo cluster discovery, mark the
-		// @domain-demo feature lights pre-verified so they go green at Init time.
+		// @domain-demo feature lights pre-verified so they go green at Init time,
+		// and arm continuous polling of the registry so newly-joined clusters
+		// are picked up without a restart.
 		if *demoFlag && len(clusters) > 0 {
 			d.MarkPreVerified(dashboard.CapabilityVerifiedMsg{
 				Domain:  "demo",
 				Status:  "green",
 				Details: fmt.Sprintf("%d cluster(s) discovered via lezz demo registry", len(clusters)),
 			})
+			initialNames := make([]string, len(clusters))
+			for i, c := range clusters {
+				initialNames[i] = c.Name
+			}
+			registryURL := fmt.Sprintf("http://127.0.0.1:%d/cluster", demo.DiscoveryPort)
+			d.SetRegistryURL(registryURL, initialNames)
 		}
 
 		if err := d.Run(); err != nil {

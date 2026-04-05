@@ -98,12 +98,15 @@ func TestWatcherMapsHealthState(t *testing.T) {
 	}
 }
 
-// TestWatcherDeduplicatesUpdates verifies no duplicate updates for unchanged state
+// TestWatcherDeduplicatesUpdates verifies target-level updates are deduplicated
+// for unchanged state, while instance-level heartbeat updates are still emitted
+// every poll cycle to keep the Bubble Tea command pipeline alive.
 func TestWatcherDeduplicatesUpdates(t *testing.T) {
-	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		// Always return same state
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
 		resp := StatusResponse{
 			Service: "test",
 			Targets: []TargetStatus{
@@ -131,24 +134,30 @@ func TestWatcherDeduplicatesUpdates(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	updates := make(chan LightUpdate, 10)
+	updates := make(chan LightUpdate, 32)
 	watcher.Start(ctx, updates)
 
-	// Collect all updates
-	updateCount := 0
+	var targetUpdates, heartbeats int
 	for {
 		select {
-		case <-updates:
-			updateCount++
+		case u := <-updates:
+			if u.IsInstance {
+				heartbeats++
+			} else if len(u.RemoteFeatures) == 0 {
+				targetUpdates++
+			}
 		case <-ctx.Done():
 			goto done
 		}
 	}
 done:
-
-	// Should only get 1 update (first discovery), not multiple due to polling
-	if updateCount > 1 {
-		t.Errorf("got %d updates, expected 1 (deduplicated)", updateCount)
+	// Target-level updates must be deduplicated: only the first discovery emits one.
+	if targetUpdates != 1 {
+		t.Errorf("target updates: got %d, want 1 (deduplicated)", targetUpdates)
+	}
+	// Heartbeat updates must arrive on every poll to keep the Bubble Tea pipeline alive.
+	if heartbeats < 2 {
+		t.Errorf("heartbeat updates: got %d, want ≥2 (one per poll cycle)", heartbeats)
 	}
 }
 

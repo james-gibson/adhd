@@ -16,6 +16,18 @@ import (
 	"github.com/james-gibson/adhd/internal/lights"
 )
 
+// RemoteFeature is a Gherkin feature reported by a remote smoke-alarm.
+// The smoke-alarm exposes these via GET /features; ADHD displays them as
+// feature lights sourced from that alarm.
+type RemoteFeature struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Tags        []string `json:"tags,omitempty"`
+	Scenarios   int      `json:"scenarios"`
+	Status      string   `json:"status"` // "certified", "unclaimed", "failed"
+	CertifiedAt string   `json:"certified_at,omitempty"`
+}
+
 // LightUpdate represents a light state change from smoke-alarm
 type LightUpdate struct {
 	SourceName string        // smoke-alarm instance name
@@ -28,6 +40,10 @@ type LightUpdate struct {
 	// IsInstance is true when this update describes the smoke-alarm instance
 	// itself (reachable/unreachable) rather than a target within it.
 	IsInstance bool
+	// RemoteFeatures is non-nil when this update carries a batch of feature
+	// certifications from the alarm's /features endpoint rather than a target
+	// health update. TargetID and Status are not meaningful in this case.
+	RemoteFeatures []RemoteFeature
 }
 
 // Watcher polls and subscribes to smoke-alarm instances
@@ -172,6 +188,10 @@ func (w *Watcher) pollOnce(ctx context.Context, endpoint config.SmokeAlarmEndpoi
 		return
 	}
 
+	// After a successful /status poll, also fetch remote feature certifications.
+	// Failures are silent — not all smoke-alarms expose /features yet.
+	w.pollFeatures(ctx, endpoint, updates)
+
 	// Emit updates for each target that changed
 	for _, target := range status.Targets {
 		key := fmt.Sprintf("%s:%s", endpoint.Name, target.ID)
@@ -196,6 +216,54 @@ func (w *Watcher) pollOnce(ctx context.Context, endpoint config.SmokeAlarmEndpoi
 				Source:     "poll",
 			}
 		}
+	}
+
+	// Always emit a heartbeat instance update so the Bubble Tea waitForLightUpdate
+	// command is re-armed on every poll cycle, even when all target statuses are
+	// stable (no changed==true above). Without this, the dashboard's light update
+	// pipeline goes silent once targets stop changing state.
+	select {
+	case updates <- LightUpdate{
+		SourceName: endpoint.Name,
+		Status:     lights.StatusGreen,
+		Source:     "poll",
+		IsInstance: true,
+	}:
+	default:
+	}
+}
+
+// pollFeatures fetches GET /features from the smoke-alarm and, if the endpoint
+// exists, sends a single LightUpdate carrying the full RemoteFeatures list.
+// 404 responses are silently ignored — older alarms don't expose /features.
+func (w *Watcher) pollFeatures(ctx context.Context, endpoint config.SmokeAlarmEndpoint, updates chan<- LightUpdate) {
+	featURL := strings.TrimSuffix(endpoint.Endpoint, "/") + "/features"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, featURL, nil)
+	if err != nil {
+		return
+	}
+	resp, err := w.client.Do(req)
+	if err != nil || resp.StatusCode == http.StatusNotFound {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	var features []RemoteFeature
+	if err := json.NewDecoder(resp.Body).Decode(&features); err != nil || len(features) == 0 {
+		return
+	}
+	select {
+	case updates <- LightUpdate{
+		SourceName:     endpoint.Name,
+		Source:         "poll",
+		RemoteFeatures: features,
+	}:
+	default:
 	}
 }
 

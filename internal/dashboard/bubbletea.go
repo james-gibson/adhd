@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -46,6 +48,10 @@ type BubbleTeaDashboard struct {
 	// this baseline is established, preventing startup flicker when adhd
 	// connects before the cluster is ready.
 	clusterEverHealthy bool
+	// placeholdersCleared is set true the first time real smoke-alarm target
+	// data arrives, removing the placeholder lights that were added at startup
+	// when no Gherkin features or binary configs were found.
+	placeholdersCleared bool
 	// preVerified holds CapabilityVerifiedMsgs to be emitted during Init().
 	// Callers set these before Run() when a domain is already known-good
 	// at construction time (e.g. demo cluster was just discovered).
@@ -55,6 +61,15 @@ type BubbleTeaDashboard struct {
 	// these so the specific capability signal is not overwritten by the
 	// aggregate health fallback.
 	verifiedDomains map[string]bool
+	// registryURL is the lezz demo /cluster endpoint to poll for newly-joined
+	// clusters. Empty string disables polling (non-demo mode).
+	registryURL string
+	// knownClusterNames holds the cluster names already wired into the watcher
+	// so that pollClusterRegistry can compute the set difference on each tick.
+	knownClusterNames map[string]bool
+	// program is set in Run() so that external goroutines (e.g. MCP handlers)
+	// can inject messages into the Bubble Tea update loop via Send().
+	program *tea.Program
 }
 
 // NewBubbleTeaDashboardWithBrowser creates a BubbleTeaDashboard using the
@@ -124,9 +139,33 @@ func NewBubbleTeaDashboard(cfg *config.Config) *BubbleTeaDashboard {
 		slog.Warn("failed to load features", "error", err)
 	}
 
-	// Add legacy features if no binaries configured
+	// If configured paths yielded nothing, try paths relative to the executable.
+	// This handles cases where ADHD is run from a directory other than the project root
+	// (e.g. bin/adhd -demo from a CI runner or when lezz demo spawns the binary).
+	if len(discoveredFeatures) == 0 {
+		if execPath, err := os.Executable(); err == nil {
+			execDir := filepath.Dir(execPath)
+			fallbackPaths := []string{
+				filepath.Join(execDir, "..", "features", "adhd"),
+				filepath.Join(execDir, "features", "adhd"),
+			}
+			fallbackLoader := features.NewLoader(fallbackPaths)
+			if fallbackFeatures, err := fallbackLoader.LoadFeatures(); err == nil && len(fallbackFeatures) > 0 {
+				discoveredFeatures = fallbackFeatures
+				slog.Debug("loaded features from executable-relative path", "count", len(discoveredFeatures))
+			}
+		}
+	}
+
+	// Add legacy features if no binaries configured.
+	// Only features with a @domain-* tag are included: features without a domain
+	// have no certification path in ADHD's runtime model and would be permanently dark.
 	if c.Count() == 0 && len(discoveredFeatures) > 0 {
 		for _, feature := range discoveredFeatures {
+			if feature.Domain == "" {
+				slog.Debug("skipping feature with no domain tag", "feature", feature.Name)
+				continue
+			}
 			light := lights.New(feature.Name, "feature")
 			light.Source = "gherkin"
 			light.SourceMeta = map[string]string{
@@ -254,6 +293,13 @@ func (m *BubbleTeaDashboard) Init() tea.Cmd {
 		cmds = append(cmds, probe)
 	}
 
+	// Poll the lezz demo /cluster registry for newly-joined clusters.
+	// New clusters are wired into the existing watcher and lightUpdates channel,
+	// so the waitForLightUpdate loop above picks up their updates automatically.
+	if m.registryURL != "" {
+		cmds = append(cmds, pollClusterRegistry(m.registryURL, m.knownClusterNames))
+	}
+
 	return tea.Batch(cmds...)
 }
 
@@ -329,6 +375,17 @@ func (m *BubbleTeaDashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.tick()
 
 	case smokelink.LightUpdate:
+		// Remote feature batch from /features — create or update feature lights
+		// sourced from this alarm. These represent what the remote has certified,
+		// so their status comes directly from the alarm's report.
+		if len(msg.RemoteFeatures) > 0 {
+			m.applyRemoteFeatures(msg.SourceName, msg.RemoteFeatures)
+			if m.lightUpdates != nil {
+				return m, waitForLightUpdate(m.lightUpdates)
+			}
+			return m, nil
+		}
+
 		if msg.IsInstance {
 			// Instance-level update — update the mDNS light if present.
 			if l := m.lights.GetByName(msg.SourceName); l != nil && l.Source == "mdns" {
@@ -339,6 +396,19 @@ func (m *BubbleTeaDashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Target-level update from a statically-configured smoke-alarm endpoint.
 			// Create or update the smoke:source/target light, then propagate the
 			// aggregate cluster health to all feature lights.
+
+			// On first real target arrival, evict any placeholder lights that were
+			// added at startup because no Gherkin features were configured. Real
+			// smoke-alarm data supersedes them.
+			if !m.placeholdersCleared {
+				for _, l := range m.lights.All() {
+					if l.Source == "placeholder" {
+						m.lights.Remove(l.Name)
+					}
+				}
+				m.placeholdersCleared = true
+			}
+
 			lightName := "smoke:" + msg.SourceName + "/" + msg.TargetID
 			if l := m.lights.GetByName(lightName); l != nil {
 				l.SetStatus(msg.Status)
@@ -437,9 +507,56 @@ func (m *BubbleTeaDashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitForDiscovery(m.instances)
 		}
 		return m, nil
+
+	case ClusterRegistryUpdateMsg:
+		// Record newly-known cluster names first, then wire endpoints.
+		if m.knownClusterNames == nil {
+			m.knownClusterNames = make(map[string]bool)
+		}
+		for _, name := range msg.NewNames {
+			m.knownClusterNames[name] = true
+		}
+
+		// Track whether we need to arm waitForLightUpdate (only if lightUpdates
+		// didn't exist before — the existing waiter picks up new endpoints automatically).
+		needLightWaiter := m.lightUpdates == nil
+
+		for _, ep := range msg.NewEndpoints {
+			if m.lightUpdates == nil {
+				m.lightUpdates = make(chan smokelink.LightUpdate, 32)
+			}
+			if m.watcher == nil {
+				m.watcher = smokelink.NewWatcher(nil)
+			}
+			m.watcher.WatchEndpoint(m.ctx, ep, m.lightUpdates)
+			slog.Info("demo registry: new cluster wired", "endpoint", ep.Name, "url", ep.Endpoint)
+		}
+
+		if len(msg.NewNames) > 0 {
+			m.applyCapabilityToFeatures("demo", lights.StatusGreen,
+				fmt.Sprintf("%d cluster(s) in lezz demo registry", len(m.knownClusterNames)))
+		}
+
+		cmds := []tea.Cmd{pollClusterRegistry(msg.RegistryURL, m.knownClusterNames)}
+		if needLightWaiter && m.lightUpdates != nil {
+			cmds = append(cmds, waitForLightUpdate(m.lightUpdates))
+		}
+		return m, tea.Batch(cmds...)
 	}
 
 	return m, nil
+}
+
+// SetRegistryURL enables continuous polling of a lezz demo /cluster registry.
+// Call after NewBubbleTeaDashboard but before Run(). initialNames is the set
+// of cluster names already wired from the startup Browse — the poller only
+// returns clusters that are not already in this set.
+func (m *BubbleTeaDashboard) SetRegistryURL(registryURL string, initialNames []string) {
+	m.registryURL = registryURL
+	m.knownClusterNames = make(map[string]bool, len(initialNames))
+	for _, n := range initialNames {
+		m.knownClusterNames[n] = true
+	}
 }
 
 // MarkPreVerified queues a CapabilityVerifiedMsg to be emitted at Init()
@@ -509,6 +626,42 @@ func (m *BubbleTeaDashboard) certifyFromSmokeTarget(sourceName, targetID string)
 		// network integration runs health checks (not just connectivity).
 		m.applyCapabilityToFeatures("smoke-alarm-network", lights.StatusGreen,
 			fmt.Sprintf("smoke-alarm self-monitoring active: %s", sourceName))
+	}
+}
+
+// applyRemoteFeatures creates or updates feature lights for Gherkin features
+// reported by a remote smoke-alarm's /features endpoint. Each light is named
+// "remote:{sourceName}/{feature.ID}" so it is unique per alarm and feature.
+// Status maps directly from the alarm's report: "certified"→green,
+// "failed"→red, anything else→dark.
+func (m *BubbleTeaDashboard) applyRemoteFeatures(sourceName string, features []smokelink.RemoteFeature) {
+	for _, f := range features {
+		if f.ID == "" || f.Name == "" {
+			continue
+		}
+		lightName := "remote:" + sourceName + "/" + f.ID
+		status := lights.StatusDark
+		switch f.Status {
+		case "certified":
+			status = lights.StatusGreen
+		case "failed":
+			status = lights.StatusRed
+		}
+		details := fmt.Sprintf("%d scenarios — reported by %s", f.Scenarios, sourceName)
+		if l := m.lights.GetByName(lightName); l != nil {
+			l.SetStatus(status)
+			l.SetDetails(details)
+		} else {
+			l = lights.New(lightName, "feature")
+			l.Source = "remote:" + sourceName
+			l.SetStatus(status)
+			l.SetDetails(details)
+			l.SourceMeta = map[string]string{
+				"feature_id": f.ID,
+				"alarm":      sourceName,
+			}
+			m.lights.Add(l)
+		}
 	}
 }
 
@@ -823,7 +976,18 @@ func (m *BubbleTeaDashboard) Shutdown() {
 // Run starts the Bubble Tea dashboard
 func (m *BubbleTeaDashboard) Run() error {
 	p := tea.NewProgram(m)
+	m.program = p
 	_, err := p.Run()
+	m.program = nil
 	m.Shutdown()
 	return err
+}
+
+// Send injects a message into the running Bubble Tea update loop.
+// Safe to call from outside goroutines (e.g. MCP handlers).
+// No-op if the program is not running.
+func (m *BubbleTeaDashboard) Send(msg tea.Msg) {
+	if m.program != nil {
+		m.program.Send(msg)
+	}
 }

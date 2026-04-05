@@ -251,17 +251,24 @@ func TestHeadlessMultipleInstances(t *testing.T) {
 func TestHeadlessIsotopeRegistration(t *testing.T) {
 	// Mock smoke-alarm that accepts isotope registration via REST
 	registered := false
+	var registrationBody map[string]interface{}
 	smokeAlarm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/isotope/register" && r.Method == http.MethodPost {
 			registered = true
+			// Capture what ADHD sent — it must NOT include trust_rung.
+			// The rung is assigned by the smoke-alarm, never declared by the registrant.
+			if err := json.NewDecoder(r.Body).Decode(&registrationBody); err != nil {
+				t.Errorf("failed to decode registration body: %v", err)
+			}
 			w.Header().Set("Content-Type", "application/json")
+			// Smoke-alarm assigns the rung in the response — ADHD reads it from here.
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"name":          "adhd",
 				"role":          "prime",
 				"endpoint":      ":0",
 				"protocol":      "mcp",
 				"trust_rung":    2,
-				"rung_name":     "Harness Tools",
+				"rung_name":     "transit-verified",
 				"registered_at": time.Now().UTC(),
 			})
 			return
@@ -290,6 +297,52 @@ func TestHeadlessIsotopeRegistration(t *testing.T) {
 
 	if !registered {
 		t.Error("smoke-alarm did not receive isotope.register call")
+	}
+
+	// ADHD must not self-declare a trust_rung in the registration request.
+	// The smoke-alarm is the authority; the rung is assigned in the response.
+	if _, ok := registrationBody["trust_rung"]; ok {
+		t.Error("registration request must not include trust_rung: rung is server-assigned, not self-declared")
+	}
+}
+
+// TestHeadlessIsotopeRungIsServerAssigned verifies that ADHD uses the rung
+// assigned by the smoke-alarm in the registration response, not any internal value.
+// A binary may internally consider itself at a high rung; only the smoke-alarm's
+// assignment matters for what data ADHD can receive.
+func TestHeadlessIsotopeRungIsServerAssigned(t *testing.T) {
+	// Smoke-alarm assigns rung 1 regardless of what ADHD thinks of itself.
+	smokeAlarm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/isotope/register" && r.Method == http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"name":          "adhd",
+				"role":          "prime",
+				"endpoint":      ":0",
+				"protocol":      "mcp",
+				"trust_rung":    1, // smoke-alarm says rung 1
+				"rung_name":     "dev-certified",
+				"registered_at": time.Now().UTC(),
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer smokeAlarm.Close()
+
+	rung, err := headless.RegisterIsotopeWithRole(
+		context.Background(),
+		smokeAlarm.URL,
+		headless.RolePrime,
+		"127.0.0.1:0",
+	)
+	if err != nil {
+		t.Fatalf("registration failed: %v", err)
+	}
+
+	// ADHD must use the server-assigned rung (1), not any internal assumption.
+	if rung != 1 {
+		t.Errorf("expected server-assigned rung 1, got %d: ADHD must not override or inflate the assigned rung", rung)
 	}
 }
 
