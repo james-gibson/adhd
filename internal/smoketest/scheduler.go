@@ -327,6 +327,11 @@ func (s *Scheduler) ListEndpoints() []*CertifiedEndpoint {
 	return endpoints
 }
 
+// GetRunner returns the underlying smoke test runner
+func (s *Scheduler) GetRunner() *Runner {
+	return s.runner
+}
+
 // Snapshot returns status snapshot of all endpoints
 func (s *Scheduler) Snapshot() map[string]interface{} {
 	s.mu.RLock()

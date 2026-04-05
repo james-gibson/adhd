@@ -20,7 +20,9 @@ import (
 
 	"github.com/james-gibson/adhd/internal/config"
 	"github.com/james-gibson/adhd/internal/lights"
+	"github.com/james-gibson/adhd/internal/metricsapi"
 	"github.com/james-gibson/adhd/internal/proxy"
+	"github.com/james-gibson/adhd/internal/smoketest"
 )
 
 // TopologyProvider is a function that returns current topology info
@@ -105,6 +107,10 @@ type Server struct {
 
 	securityAlertHandler SecurityAlertHandler
 
+	// Metrics API for smoke test scheduler endpoints
+	metricsAPI *metricsapi.API
+	scheduler  *smoketest.Scheduler
+
 	// Dynamic per-repo tools registered on cluster join.
 	mu           sync.RWMutex
 	dynamicTools []*dynamicTool
@@ -160,6 +166,12 @@ func (s *Server) SetSecurityAlertHandler(h SecurityAlertHandler) {
 	s.securityAlertHandler = h
 }
 
+// SetScheduler registers the smoke test scheduler for metrics API access
+func (s *Server) SetScheduler(scheduler *smoketest.Scheduler) {
+	s.scheduler = scheduler
+	s.metricsAPI = metricsapi.NewAPI(scheduler)
+}
+
 // fireSecurity adds a red security light to the cluster and calls the handler.
 func (s *Server) fireSecurity(level, event string, details map[string]interface{}) {
 	// Surface as a red light so the local cluster/TUI shows it immediately.
@@ -190,6 +202,13 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /mcp", s.handleMCPRPC)
 	mux.HandleFunc("GET /mcp", s.handleMCPSSE)
+
+	// Register metrics API endpoints if scheduler is available
+	if s.metricsAPI != nil {
+		mux.HandleFunc("GET /api/endpoints/{id}/metrics", s.metricsAPI.HandleMetrics)
+		mux.HandleFunc("GET /api/metrics/snapshot", s.metricsAPI.HandleSnapshot)
+		mux.HandleFunc("GET /api/events", s.metricsAPI.HandleEvents)
+	}
 
 	var handler http.Handler = mux
 	if s.middleware != nil {

@@ -594,6 +594,15 @@ func (m *BubbleTeaDashboard) SetRegistryURL(registryURL string, initialNames []s
 func (m *BubbleTeaDashboard) SetScheduler(scheduler *smoketest.Scheduler) {
 	m.scheduler = scheduler
 	m.testEvents = make(chan smoketest.ScheduleEvent, 100)
+	// Also set scheduler on MCP server for metrics API
+	if m.mcpServer != nil {
+		m.mcpServer.SetScheduler(scheduler)
+	}
+}
+
+// MCPServer returns the underlying MCP server (if available)
+func (m *BubbleTeaDashboard) MCPServer() *mcpserver.Server {
+	return m.mcpServer
 }
 
 // MarkPreVerified queues a CapabilityVerifiedMsg to be emitted at Init()
