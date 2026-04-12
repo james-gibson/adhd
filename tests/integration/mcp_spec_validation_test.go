@@ -7,11 +7,14 @@ import (
 	"net"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/james-gibson/adhd/internal/config"
 	"github.com/james-gibson/adhd/internal/lights"
 	"github.com/james-gibson/adhd/internal/mcpserver"
 )
+
+var specClient = &http.Client{Timeout: 5 * time.Second}
 
 // TestMCPSpecCompliance validates that the ADHD MCP server implements the MCP specification
 // This is the kind of check that fire-marshal should perform before deployment
@@ -182,7 +185,7 @@ func makeRawMCPCall(t *testing.T, endpoint string, method string, params interfa
 	}
 
 	body, _ := json.Marshal(reqBody)
-	resp, err := http.Post("http://"+endpoint+"/mcp", "application/json", bytes.NewReader(body))
+	resp, err := specClient.Post("http://"+endpoint+"/mcp", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("failed to call MCP: %v", err)
 	}
