@@ -123,9 +123,9 @@ func TestMatchFeaturesPassWhenMethodsSeen(t *testing.T) {
 		entry("request", "adhd.lights.list", false),
 		entry("response", "adhd.lights.list", false),
 		entry("request", "adhd.lights.get", false),
-		entry("response", "adhd.lights.get", false),   // success (single scenario)
+		entry("response", "adhd.lights.get", false), // success (single scenario)
 		entry("request", "adhd.lights.get", false),
-		entry("response", "adhd.lights.get", true),    // error response (missing scenario)
+		entry("response", "adhd.lights.get", true), // error response (missing scenario)
 	})
 
 	cl, err := report.ScanLog(path)
@@ -141,19 +141,21 @@ func TestMatchFeaturesPassWhenMethodsSeen(t *testing.T) {
 		t.Fatal("no results — check features/ directory path")
 	}
 
-	var mcpFeat *report.FeatureResult
+	var totalPass, totalFail, totalNoCov, totalUnver int
+	var mcpScenarios []report.ScenarioResult
 	for i := range results {
 		if results[i].Domain == "mcp-server" {
-			mcpFeat = &results[i]
+			totalPass += results[i].PassCount
+			totalFail += results[i].FailCount
+			totalNoCov += results[i].NoCoverage
+			totalUnver += results[i].Unverifiable
+			mcpScenarios = append(mcpScenarios, results[i].Scenarios...)
 		}
 	}
-	if mcpFeat == nil {
-		t.Fatal("mcp-server feature not found")
+	if totalPass == 0 {
+		t.Errorf("mcp-server: 0 passing scenarios; scenarios=%v", summarize(mcpScenarios))
 	}
-	if mcpFeat.PassCount == 0 {
-		t.Errorf("mcp-server: 0 passing scenarios; scenarios=%v", summarize(mcpFeat.Scenarios))
-	}
-	t.Logf("mcp-server: pass=%d fail=%d nocov=%d unver=%d", mcpFeat.PassCount, mcpFeat.FailCount, mcpFeat.NoCoverage, mcpFeat.Unverifiable)
+	t.Logf("mcp-server: pass=%d fail=%d nocov=%d unver=%d", totalPass, totalFail, totalNoCov, totalUnver)
 }
 
 func TestMatchFeaturesNoCoverageFromEmptyLog(t *testing.T) {
@@ -230,7 +232,7 @@ func TestReportFromMockServerTraffic(t *testing.T) {
 		"tools/list",
 		"adhd.status",
 		"adhd.lights.list",
-		"adhd.lights.get",       // success (name="primary")
+		"adhd.lights.get", // success (name="primary")
 		"adhd.isotope.status",
 		"adhd.isotope.peers",
 		"ping",

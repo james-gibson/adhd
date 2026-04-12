@@ -374,9 +374,9 @@ func TestMCPServerToolsListCompliance(t *testing.T) {
 		t.Fatal("tools is not an array")
 	}
 
-	// Should have 16 ADHD tools
-	if len(tools) != 16 {
-		t.Errorf("expected 16 tools, got %d", len(tools))
+	// Should have 17 ADHD tools
+	if len(tools) != 17 {
+		t.Errorf("expected 17 tools, got %d", len(tools))
 	}
 
 	// Verify each tool has required fields

@@ -352,9 +352,9 @@ func TestServerToolsList(t *testing.T) {
 		t.Fatal("tools is not an array")
 	}
 
-	// Should have 16 ADHD tools
-	if len(tools) != 16 {
-		t.Errorf("expected 16 tools, got %d", len(tools))
+	// Should have 17 ADHD tools
+	if len(tools) != 17 {
+		t.Errorf("expected 17 tools, got %d", len(tools))
 	}
 
 	// Verify tool names
@@ -370,13 +370,13 @@ func TestServerToolsList(t *testing.T) {
 	}
 
 	expectedTools := map[string]bool{
-		"adhd.status":            true,
-		"adhd.lights.list":       true,
-		"adhd.lights.get":        true,
-		"adhd.isotope.instance":  true,
-		"adhd.rung.respond":      true,
-		"adhd.rung.verify":       true,
-		"adhd.rung.challenge":    true,
+		"adhd.status":           true,
+		"adhd.lights.list":      true,
+		"adhd.lights.get":       true,
+		"adhd.isotope.instance": true,
+		"adhd.rung.respond":     true,
+		"adhd.rung.verify":      true,
+		"adhd.rung.challenge":   true,
 	}
 
 	for expected := range expectedTools {
