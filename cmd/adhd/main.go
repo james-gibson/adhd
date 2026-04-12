@@ -61,7 +61,7 @@ func main() {
 			if err := shutdown(ctx); err != nil {
 				slog.Error("telemetry shutdown failed", "error", err)
 			}
-		}()
+			}()
 	}
 
 	// Load configuration — either from file or by discovering a lezz demo cluster.
@@ -74,7 +74,7 @@ func main() {
 		if discoverErr != nil {
 			fmt.Fprintln(os.Stderr, "demo discovery failed:", discoverErr)
 			os.Exit(1)
-		}
+			}
 		fmt.Fprintf(os.Stderr, "found %d cluster(s)\n", len(clusters))
 		cfg = demo.ConfigFromClusters(clusters)
 	} else {
@@ -83,7 +83,7 @@ func main() {
 		if loadErr != nil {
 			slog.Error("failed to load config", "path", *configFlag, "error", loadErr)
 			os.Exit(1)
-		}
+			}
 	}
 
 	if cfg.IsNetworkingEnabled() {
@@ -98,12 +98,12 @@ func main() {
 		// Override MCP address if specified (useful for avoiding port conflicts)
 		if *mcpAddrFlag != "" {
 			cfg.MCPServer.Addr = *mcpAddrFlag
-		}
+			}
 
 		if err := server.Start(*logFileFlag); err != nil {
 			slog.Warn("headless server start warning", "error", err)
 			// Continue even if server startup fails - still log traffic
-		}
+			}
 
 			// Setup message queue for prime-plus topology if configured
 		if *primePlusFlag {
@@ -124,14 +124,14 @@ func main() {
 				server.SetupMessageQueue(*primePlusFlag, primeAddr, *bufferSizeFlag)
 				slog.Info("message queue configured for prime-plus", "prime_addr", primeAddr, "buffer_size", *bufferSizeFlag)
 			}
-		}
+			}
 
 		// Register with smoke-alarm if configured
 		if *smokeAlarmURL != "" {
 			if err := server.RegisterAsIsotope(*smokeAlarmURL); err != nil {
 				slog.Warn("failed to register as isotope", "error", err)
 			}
-		}
+			}
 
 		// Keep running indefinitely (respond to signals)
 		slog.Info("adhd running in headless mode", "log_file", *logFileFlag, "prime_plus", *primePlusFlag)
@@ -141,7 +141,7 @@ func main() {
 		slog.Info("shutting down")
 		if err := server.Shutdown(); err != nil {
 			slog.Warn("server shutdown error", "error", err)
-		}
+			}
 	} else {
 		// TUI mode: Bubble Tea dashboard
 		d := dashboard.NewBubbleTeaDashboard(cfg)
@@ -178,6 +178,7 @@ func main() {
 			scheduler.Start(ctx)
 			d.SetScheduler(scheduler)
 
+
 			// Wire scheduler events to dashboard
 			go func() {
 				for event := range scheduler.EventsChannel() {
@@ -186,7 +187,7 @@ func main() {
 			}()
 
 			slog.Info("smoke test scheduler started", "endpoints", len(cfg.CertifiedEndpoints))
-		}
+			}
 
 		// If the config was built from a lezz demo cluster discovery, mark the
 		// @domain-demo feature lights pre-verified so they go green at Init time,
@@ -204,11 +205,11 @@ func main() {
 			}
 			registryURL := fmt.Sprintf("http://127.0.0.1:%d/cluster", demo.DiscoveryPort)
 			d.SetRegistryURL(registryURL, initialNames)
-		}
+			}
 
 		if err := d.Run(); err != nil {
 			slog.Error("dashboard error", "error", err)
-		}
+			}
 	}
 }
 
@@ -225,7 +226,7 @@ func version() string {
 			if s.Key == "vcs.revision" && len(s.Value) >= 8 {
 				return "adhd " + s.Value[:8]
 			}
-		}
+			}
 		return "adhd dev"
 	}
 

@@ -17,6 +17,7 @@ echo ""
 # Fetch server list
 echo "Fetching server list from registry..."
 SERVERS=$(curl -s "$REGISTRY_URL" | jq -r '.servers[] | select(.server.remotes != null) | .server | "\(.name) \(.remotes[0].url)"' | sort -u)
+SERVERS="temp https://api.pricepertoken.com/mcp/mcp \n ${SERVERS}" 
 
 if [ -z "$SERVERS" ]; then
   echo "ERROR: Could not fetch server list from registry"

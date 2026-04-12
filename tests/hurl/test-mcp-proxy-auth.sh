@@ -22,7 +22,7 @@ echo ""
 
 # Fetch servers with public endpoints
 SERVERS=$(curl -s "$REGISTRY_URL" | jq -r '.servers[] | select(.server.remotes != null) | .server | "\(.name) \(.remotes[0].url)"' | sort -u)
-
+SERVERS="temp https://api.pricepertoken.com/mcp\n ${SERVERS}"
 SERVER_COUNT=$(echo "$SERVERS" | wc -l)
 echo "Found $SERVER_COUNT servers to test"
 echo ""
