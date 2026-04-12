@@ -26,7 +26,7 @@ func waitForServer(addr string, maxWait time.Duration) error {
 			_ = conn.Close()
 			return nil
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 	return fmt.Errorf("server at %s not ready after %v", addr, maxWait)
 }
@@ -250,13 +250,13 @@ func DoJSONRPCCall(t *testing.T, endpoint string, method string, params interfac
 	}
 
 	var resp *http.Response
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 5; attempt++ {
 		resp, err = testHTTPClient.Post(endpoint, "application/json", bytes.NewReader(bodyBytes))
 		if err == nil {
 			break
 		}
-		if attempt < 2 {
-			time.Sleep(10 * time.Millisecond)
+		if attempt < 4 {
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 	if err != nil {

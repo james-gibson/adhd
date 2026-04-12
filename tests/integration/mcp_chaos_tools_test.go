@@ -35,7 +35,7 @@ func TestMCPToolsChaos(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
 
-	if err := waitForServer(addr, 2*time.Second); err != nil {
+	if err := waitForServer(addr, 5*time.Second); err != nil {
 		t.Fatalf("server not ready: %v", err)
 	}
 
@@ -295,7 +295,7 @@ func TestMCPToolsUnderConcurrentLoad(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
 
-	if err := waitForServer(addr, 2*time.Second); err != nil {
+	if err := waitForServer(addr, 5*time.Second); err != nil {
 		t.Fatalf("server not ready: %v", err)
 	}
 

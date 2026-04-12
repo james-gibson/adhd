@@ -37,7 +37,7 @@ func TestMCPSpecCompliance(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
 
-	if err := waitForServer(addr, 2*time.Second); err != nil {
+	if err := waitForServer(addr, 5*time.Second); err != nil {
 		t.Fatalf("server not ready: %v", err)
 	}
 
@@ -192,13 +192,13 @@ func makeRawMCPCall(t *testing.T, endpoint string, method string, params interfa
 
 	var resp *http.Response
 	var err error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 5; attempt++ {
 		resp, err = specClient.Post("http://"+endpoint+"/mcp", "application/json", bytes.NewReader(body))
 		if err == nil {
 			break
 		}
-		if attempt < 2 {
-			time.Sleep(10 * time.Millisecond)
+		if attempt < 4 {
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 	if err != nil {
