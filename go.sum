@@ -22,10 +22,6 @@ github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f h1:Y/CXytFA4m6
 github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f/go.mod h1:vw97MGsxSvLiUE2X8qFplwetxpGLQrlU1Q9AUEIzCaM=
 github.com/grandcat/zeroconf v1.0.0 h1:uHhahLBKqwWBV6WZUDAT71044vwOTL+McW0mBJvo6kE=
 github.com/grandcat/zeroconf v1.0.0/go.mod h1:lTKmG1zh86XyCoUeIHSA4FJMBwCJiQmGfcP2PdzytEs=
-github.com/james-gibson/isotope v0.2.0 h1:rqBoY/MDZEzlnZuIPfxTm46yiIrGbCCQ6yhYXR3Qjhc=
-github.com/james-gibson/isotope v0.2.0/go.mod h1:JHrGluAKZMEWKtG9pBp9CZN1jSHvplS9X80OyaY331g=
-github.com/james-gibson/isotope v0.3.0 h1:QDOR4uLJygkc4PVqI2fiDT4O4PICC1OAaOC3q37GIVI=
-github.com/james-gibson/isotope v0.3.0/go.mod h1:JHrGluAKZMEWKtG9pBp9CZN1jSHvplS9X80OyaY331g=
 github.com/james-gibson/isotope v0.3.1 h1:X36TLcT4pAxDIFhhXevw9MeKUMAx1IHHIWOVP+a6xx8=
 github.com/james-gibson/isotope v0.3.1/go.mod h1:JHrGluAKZMEWKtG9pBp9CZN1jSHvplS9X80OyaY331g=
 github.com/lucasb-eyer/go-colorful v1.4.0 h1:UtrWVfLdarDgc44HcS7pYloGHJUjHV/4FwW4TvVgFr4=
