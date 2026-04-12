@@ -11,7 +11,7 @@ import (
 
 // TestStaleRegistryDetection validates fire-marshal's ability to detect dead clusters
 func TestStaleRegistryDetection(t *testing.T) {
-	resp, err := http.Get(clusterRegistryURL)
+	resp, err := registryGet()
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestStaleRegistryDetection(t *testing.T) {
 
 // TestRegistryStalenessMetrics calculates staleness indicators
 func TestRegistryStalenessMetrics(t *testing.T) {
-	resp, err := http.Get(clusterRegistryURL)
+	resp, err := registryGet()
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestRegistryStalenessMetrics(t *testing.T) {
 
 // TestClusterNotFoundLeavesRegistryEntry tests the scenario where clusters die but registry isn't cleaned
 func TestClusterNotFoundLeavesRegistryEntry(t *testing.T) {
-	resp, err := http.Get(clusterRegistryURL)
+	resp, err := registryGet()
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}

@@ -13,9 +13,15 @@ import (
 
 const clusterRegistryURL = "http://192.168.7.18:19100/cluster"
 
+var registryClient = &http.Client{Timeout: 5 * time.Second}
+
+func registryGet() (*http.Response, error) {
+	return registryClient.Get(clusterRegistryURL)
+}
+
 // TestClusterRegistryEnumeration validates that all clusters are discoverable and consistent
 func TestClusterRegistryEnumeration(t *testing.T) {
-	resp, err := http.Get(clusterRegistryURL)
+	resp, err := registryGet()
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
@@ -50,7 +56,7 @@ func TestClusterRegistryEnumeration(t *testing.T) {
 
 	// Verify consistency on repeated queries
 	time.Sleep(100 * time.Millisecond)
-	resp2, _ := http.Get(clusterRegistryURL)
+	resp2, _ := registryGet()
 	var registry2 map[string]map[string]interface{}
 	_ = json.NewDecoder(resp2.Body).Decode(&registry2)
 	_ = resp2.Body.Close()
@@ -64,7 +70,7 @@ func TestClusterRegistryEnumeration(t *testing.T) {
 
 // TestClusterEndpointReachability validates all registered endpoints are reachable
 func TestClusterEndpointReachability(t *testing.T) {
-	resp, err := http.Get(clusterRegistryURL)
+	resp, err := registryGet()
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
@@ -154,7 +160,7 @@ func TestClusterEndpointReachability(t *testing.T) {
 // TestClusterConcurrentDiscovery validates concurrent registry queries
 func TestClusterConcurrentDiscovery(t *testing.T) {
 	// Get the registry once to know the cluster count
-	resp, err := http.Get(clusterRegistryURL)
+	resp, err := registryGet()
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
@@ -178,7 +184,7 @@ func TestClusterConcurrentDiscovery(t *testing.T) {
 			defer wg.Done()
 
 			start := time.Now()
-			resp, err := http.Get(clusterRegistryURL)
+			resp, err := registryGet()
 			elapsed := time.Since(start)
 
 			if err != nil {
@@ -221,7 +227,7 @@ func TestClusterConcurrentDiscovery(t *testing.T) {
 
 // TestClusterDualAlarmRedundancy validates that clusters have dual smoke-alarms
 func TestClusterDualAlarmRedundancy(t *testing.T) {
-	resp, err := http.Get(clusterRegistryURL)
+	resp, err := registryGet()
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
@@ -260,7 +266,7 @@ func TestClusterDualAlarmRedundancy(t *testing.T) {
 
 // TestClusterIsotopeUniqueness validates that all clusters have unique isotope IDs
 func TestClusterIsotopeUniqueness(t *testing.T) {
-	resp, err := http.Get(clusterRegistryURL)
+	resp, err := registryGet()
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
@@ -323,7 +329,7 @@ func TestClusterIsotopeUniqueness(t *testing.T) {
 // TestClusterRegistryStress validates registry performance under sustained load
 func TestClusterRegistryStress(t *testing.T) {
 	// Get initial registry state
-	resp, err := http.Get(clusterRegistryURL)
+	resp, err := registryGet()
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
@@ -344,7 +350,7 @@ func TestClusterRegistryStress(t *testing.T) {
 	for i := 0; i < queryCount; i++ {
 		go func() {
 			queryStart := time.Now()
-			resp, err := http.Get(clusterRegistryURL)
+			resp, err := registryGet()
 			elapsed := time.Since(queryStart)
 
 			if err != nil {
