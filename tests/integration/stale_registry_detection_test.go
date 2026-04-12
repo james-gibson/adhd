@@ -15,7 +15,7 @@ func TestStaleRegistryDetection(t *testing.T) {
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var registry map[string]map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&registry); err != nil {
@@ -30,11 +30,11 @@ func TestStaleRegistryDetection(t *testing.T) {
 
 	// Probe each cluster endpoint
 	type clusterStatus struct {
-		name       string
-		alarmAOK   bool
-		alarmBOK   bool
-		mcpOK      bool
-		reachable  bool
+		name      string
+		alarmAOK  bool
+		alarmBOK  bool
+		mcpOK     bool
+		reachable bool
 	}
 
 	var results []clusterStatus
@@ -55,7 +55,7 @@ func TestStaleRegistryDetection(t *testing.T) {
 				client := &http.Client{Timeout: timeoutDuration}
 				resp, err := client.Get(alarmA)
 				if err == nil {
-					resp.Body.Close()
+					_ = resp.Body.Close()
 					status.alarmAOK = true
 				}
 			}
@@ -65,7 +65,7 @@ func TestStaleRegistryDetection(t *testing.T) {
 				client := &http.Client{Timeout: timeoutDuration}
 				resp, err := client.Get(alarmB)
 				if err == nil {
-					resp.Body.Close()
+					_ = resp.Body.Close()
 					status.alarmBOK = true
 				}
 			}
@@ -75,7 +75,7 @@ func TestStaleRegistryDetection(t *testing.T) {
 				client := &http.Client{Timeout: timeoutDuration}
 				resp, err := client.Get(mcpURL)
 				if err == nil {
-					resp.Body.Close()
+					_ = resp.Body.Close()
 					status.mcpOK = true
 				}
 			}
@@ -148,7 +148,7 @@ func TestRegistryStalenessMetrics(t *testing.T) {
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var registry map[string]map[string]interface{}
 	_ = json.NewDecoder(resp.Body).Decode(&registry)
@@ -170,7 +170,7 @@ func TestRegistryStalenessMetrics(t *testing.T) {
 				client := &http.Client{Timeout: timeoutDuration}
 				resp, err := client.Get(url)
 				if err == nil {
-					resp.Body.Close()
+					_ = resp.Body.Close()
 					atomic.AddInt32(&alarmACount, 1)
 					atomic.AddInt32(&healthyEndpoints, 1)
 				} else {
@@ -187,7 +187,7 @@ func TestRegistryStalenessMetrics(t *testing.T) {
 				client := &http.Client{Timeout: timeoutDuration}
 				resp, err := client.Get(url)
 				if err == nil {
-					resp.Body.Close()
+					_ = resp.Body.Close()
 					atomic.AddInt32(&alarmBCount, 1)
 					atomic.AddInt32(&healthyEndpoints, 1)
 				} else {
@@ -204,7 +204,7 @@ func TestRegistryStalenessMetrics(t *testing.T) {
 				client := &http.Client{Timeout: timeoutDuration}
 				resp, err := client.Get(url)
 				if err == nil {
-					resp.Body.Close()
+					_ = resp.Body.Close()
 					atomic.AddInt32(&mcpCount, 1)
 					atomic.AddInt32(&healthyEndpoints, 1)
 				} else {
@@ -251,7 +251,7 @@ func TestClusterNotFoundLeavesRegistryEntry(t *testing.T) {
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var registry map[string]map[string]interface{}
 	_ = json.NewDecoder(resp.Body).Decode(&registry)
@@ -270,15 +270,15 @@ func TestClusterNotFoundLeavesRegistryEntry(t *testing.T) {
 
 		// Try each endpoint
 		if resp, err := client.Get(alarmA); err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			reachableCount++
 			t.Logf("  ✓ %s (alarm_a)", clusterName)
 		} else if resp, err := client.Get(alarmB); err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			reachableCount++
 			t.Logf("  ✓ %s (alarm_b)", clusterName)
 		} else if resp, err := client.Get(mcp); err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			reachableCount++
 			t.Logf("  ✓ %s (mcp)", clusterName)
 		}

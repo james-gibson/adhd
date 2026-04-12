@@ -13,8 +13,8 @@ import (
 
 // AuthConfig specifies how to authenticate with the target endpoint
 type AuthConfig struct {
-	Type  string `json:"type"`  // "bearer", "api-key", "oauth2"
-	Token string `json:"token"` // token or API key value
+	Type   string `json:"type"`             // "bearer", "api-key", "oauth2"
+	Token  string `json:"token"`            // token or API key value
 	Header string `json:"header,omitempty"` // custom header name (for api-key type)
 }
 
@@ -146,7 +146,7 @@ func (e *Executor) ExecuteProxy(ctx context.Context, req ProxyRequest) (*ProxyRe
 			},
 		}, nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Read response body
 	respBody, err := io.ReadAll(resp.Body)
@@ -297,13 +297,13 @@ func isValidHeaderName(name string) bool {
 	}
 	for _, ch := range name {
 		// HTTP headers must be ASCII, alphanumeric, or hyphen
-		if !((ch >= 'a' && ch <= 'z') ||
+		if (ch >= 'a' && ch <= 'z') ||
 			(ch >= 'A' && ch <= 'Z') ||
 			(ch >= '0' && ch <= '9') ||
-			ch == '-' ||
-			ch == '_') {
-			return false
+			ch == '-' || ch == '_' {
+			continue
 		}
+		return false
 	}
 	return true
 }

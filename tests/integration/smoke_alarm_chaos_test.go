@@ -47,7 +47,7 @@ func TestSmokeAlarmRapidStateChanges(t *testing.T) {
 
 		var body map[string]interface{}
 		_ = json.NewDecoder(resp.Body).Decode(&body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		targets, _ := body["targets"].([]interface{})
 		if len(targets) > 0 {
@@ -88,11 +88,14 @@ func TestSmokeAlarmConcurrentTargets(t *testing.T) {
 		targets[i] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/status" {
 				state := atomic.LoadInt32(&targetStates[idx])
-				stateStr := "healthy"
-				if state == 1 {
+				var stateStr string
+				switch state {
+				case 1:
 					stateStr = "degraded"
-				} else if state == 2 {
+				case 2:
 					stateStr = "outage"
+				default:
+					stateStr = "healthy"
 				}
 
 				w.Header().Set("Content-Type", "application/json")
@@ -140,7 +143,7 @@ func TestSmokeAlarmConcurrentTargets(t *testing.T) {
 			if err != nil {
 				return
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			var body map[string]interface{}
 			_ = json.NewDecoder(resp.Body).Decode(&body)
@@ -216,7 +219,7 @@ func TestSmokeAlarmManyTargets(t *testing.T) {
 			defer wg.Done()
 			resp, err := http.Get(targets[idx].URL + "/status")
 			if err == nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				atomic.AddInt32(&successCount, 1)
 			}
 		}(i)
@@ -315,7 +318,7 @@ func TestSmokeAlarmTargetAddRemoval(t *testing.T) {
 	resp, _ := http.Get(coordinator.URL + "/targets")
 	var result map[string]interface{}
 	_ = json.NewDecoder(resp.Body).Decode(&result)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	finalTargets, _ := result["targets"].([]interface{})
 	targetsMu.RLock()
@@ -378,7 +381,7 @@ func TestSmokeAlarmUnreachableTargetIsolation(t *testing.T) {
 		results = append(results, pollResult{"fast", err == nil, duration})
 		mu.Unlock()
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 	}()
 
@@ -438,7 +441,7 @@ func TestSmokeAlarmMalformedResponseHandling(t *testing.T) {
 			count := atomic.LoadInt32(&callCount)
 			if count == 1 {
 				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(`{invalid json`))
+				_, _ = w.Write([]byte(`{invalid json`))
 			} else {
 				// Second call: valid response
 				w.Header().Set("Content-Type", "application/json")
@@ -454,7 +457,7 @@ func TestSmokeAlarmMalformedResponseHandling(t *testing.T) {
 
 	// First poll (malformed)
 	resp1, _ := http.Get(malformedTarget.URL + "/status")
-	resp1.Body.Close()
+	_ = resp1.Body.Close()
 
 	// Second poll (valid) — smoke-alarm should recover
 	resp2, err := http.Get(malformedTarget.URL + "/status")
@@ -464,7 +467,7 @@ func TestSmokeAlarmMalformedResponseHandling(t *testing.T) {
 
 	var body map[string]interface{}
 	_ = json.NewDecoder(resp2.Body).Decode(&body)
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 
 	// Verify recovery
 	targets, ok := body["targets"].([]interface{})

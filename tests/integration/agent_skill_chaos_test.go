@@ -30,7 +30,7 @@ func TestAgentSkillToolChain(t *testing.T) {
 
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 	server := mcpserver.NewServer(cfg, cluster)
-	server.Start(context.Background())
+	_ = server.Start(context.Background())
 	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
 
 	// Simulate agent skill: "Check cluster health"
@@ -101,7 +101,7 @@ func TestConcurrentAgentSkills(t *testing.T) {
 
 	cfg := config.MCPServerConfig{Enabled: true, Addr: addr}
 	server := mcpserver.NewServer(cfg, cluster)
-	server.Start(context.Background())
+	_ = server.Start(context.Background())
 	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
 
 	endpoint := "http://" + addr + "/mcp"
@@ -152,7 +152,7 @@ func TestConcurrentAgentSkills(t *testing.T) {
 			}
 
 			atomic.AddInt32(&successCount, 1)
-			elapsed := time.Now().Sub(start)
+			elapsed := time.Since(start)
 			mu.Lock()
 			timings = append(timings, elapsed)
 			mu.Unlock()
@@ -190,13 +190,13 @@ func TestAgentSkillWithRetry(t *testing.T) {
 		if method == "adhd.status" && count == 1 {
 			// First call fails
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`{"error":"temporary failure"}`))
+			_, _ = w.Write([]byte(`{"error":"temporary failure"}`))
 			return
 		}
 
 		// Subsequent calls succeed
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{
+		_, _ = w.Write([]byte(`{
 			"jsonrpc":"2.0",
 			"id":1,
 			"result":{
@@ -209,17 +209,23 @@ func TestAgentSkillWithRetry(t *testing.T) {
 	server.Handle("/", mockServer)
 	httpServer := &http.Server{Handler: server}
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
-	go httpServer.Serve(listener)
-	defer listener.Close()
+
+	go func() {
+		if err := httpServer.Serve(listener); err != nil {
+			t.Errorf("server error: %v", err)
+		}
+	}()
+	//go httpServer.Serve(listener)
+	//defer listener.Close()
 
 	endpoint := "http://" + listener.Addr().String() + "/mcp"
 
 	// Skill with retry logic
 	skill := &agentSkill{
-		name:        "Check with retry",
-		endpoint:    endpoint,
-		maxRetries:  3,
-		retryDelay:  10 * time.Millisecond,
+		name:       "Check with retry",
+		endpoint:   endpoint,
+		maxRetries: 3,
+		retryDelay: 10 * time.Millisecond,
 	}
 
 	status := skill.callToolWithRetry("adhd.status", nil)
@@ -249,7 +255,7 @@ func TestAgentSkillErrorPropagation(t *testing.T) {
 		if method == "adhd.isotope.peers" {
 			// This tool always fails
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{
+			_, _ = w.Write([]byte(`{
 				"jsonrpc":"2.0",
 				"id":1,
 				"error":{"code":-32000,"message":"isotope service unavailable"}
@@ -259,7 +265,7 @@ func TestAgentSkillErrorPropagation(t *testing.T) {
 
 		// Other tools succeed
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{
+		_, _ = w.Write([]byte(`{
 			"jsonrpc":"2.0",
 			"id":1,
 			"result":{"data":"success"}
@@ -270,8 +276,8 @@ func TestAgentSkillErrorPropagation(t *testing.T) {
 	server.Handle("/", mockServer)
 	httpServer := &http.Server{Handler: server}
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
-	go httpServer.Serve(listener)
-	defer listener.Close()
+	go func() { _ = httpServer.Serve(listener) }()
+	defer func() { _ = listener.Close() }()
 
 	endpoint := "http://" + listener.Addr().String() + "/mcp"
 
@@ -319,11 +325,11 @@ func TestAgentSkillConcurrentModification(t *testing.T) {
 			mu.RUnlock()
 
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(fmt.Sprintf(`{
+			_, _ = fmt.Fprintf(w, `{
 				"jsonrpc":"2.0",
 				"id":1,
 				"result":{"name":"%s","status":"%s"}
-			}`, name, status)))
+			}`, name, status)
 			return
 		}
 
@@ -335,7 +341,7 @@ func TestAgentSkillConcurrentModification(t *testing.T) {
 			mu.Unlock()
 
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"success":true}}`))
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"success":true}}`))
 			return
 		}
 	})
@@ -344,8 +350,8 @@ func TestAgentSkillConcurrentModification(t *testing.T) {
 	server.Handle("/", mockServer)
 	httpServer := &http.Server{Handler: server}
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
-	go httpServer.Serve(listener)
-	defer listener.Close()
+	go func() { _ = httpServer.Serve(listener) }()
+	defer func() { _ = listener.Close() }()
 
 	endpoint := "http://" + listener.Addr().String() + "/mcp"
 
@@ -411,7 +417,7 @@ func (s *agentSkill) callTool(method string, params interface{}) map[string]inte
 	if err != nil {
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result map[string]interface{}
 	_ = json.NewDecoder(resp.Body).Decode(&result)

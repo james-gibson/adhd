@@ -281,12 +281,12 @@ func (a *API) HandleEvents(w http.ResponseWriter, r *http.Request) {
 
 		case event := <-eventsChan:
 			data, _ := json.Marshal(event)
-			fmt.Fprintf(w, "data: %s\n\n", string(data))
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(data))
 			flusher.Flush()
 			slog.Debug("SSE event sent", "type", event.Type, "endpoint_id", event.EndpointID)
 
 		case <-ticker.C:
-			fmt.Fprint(w, ": ping\n\n")
+			_, _ = fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
 		}
 	}
@@ -308,13 +308,14 @@ func statusFromLevel(level int) string {
 func respondJSON(w http.ResponseWriter, code int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(data)
+	
+ _ = json.NewEncoder(w).Encode(data)
 }
 
 func respondError(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+_=	json.NewEncoder(w).Encode(map[string]interface{}{
 		"error":  message,
 		"code":   code,
 		"status": http.StatusText(code),

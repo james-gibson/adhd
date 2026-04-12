@@ -19,7 +19,7 @@ func TestClusterRegistryEnumeration(t *testing.T) {
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var registry map[string]map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&registry); err != nil {
@@ -53,7 +53,7 @@ func TestClusterRegistryEnumeration(t *testing.T) {
 	resp2, _ := http.Get(clusterRegistryURL)
 	var registry2 map[string]map[string]interface{}
 	_ = json.NewDecoder(resp2.Body).Decode(&registry2)
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 
 	if len(registry) != len(registry2) {
 		t.Errorf("registry size changed: %d → %d", len(registry), len(registry2))
@@ -68,15 +68,15 @@ func TestClusterEndpointReachability(t *testing.T) {
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var registry map[string]map[string]interface{}
 	_ = json.NewDecoder(resp.Body).Decode(&registry)
 
 	type endpoint struct {
-		name    string
-		url     string
-		kind    string // "alarm_a", "alarm_b", "adhd_mcp"
+		name string
+		url  string
+		kind string // "alarm_a", "alarm_b", "adhd_mcp"
 	}
 
 	var endpoints []endpoint
@@ -111,7 +111,7 @@ func TestClusterEndpointReachability(t *testing.T) {
 			elapsed := time.Since(start)
 
 			if err == nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				atomic.AddInt32(&reachable, 1)
 				if elapsed > 1*time.Second {
 					mu.Lock()
@@ -160,7 +160,7 @@ func TestClusterConcurrentDiscovery(t *testing.T) {
 	}
 	var registry map[string]map[string]interface{}
 	_ = json.NewDecoder(resp.Body).Decode(&registry)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	numClusters := len(registry)
 	t.Logf("Testing concurrent discovery with %d clusters", numClusters)
@@ -184,7 +184,7 @@ func TestClusterConcurrentDiscovery(t *testing.T) {
 			if err != nil {
 				return
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			var r map[string]map[string]interface{}
 			if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
@@ -225,7 +225,7 @@ func TestClusterDualAlarmRedundancy(t *testing.T) {
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var registry map[string]map[string]interface{}
 	_ = json.NewDecoder(resp.Body).Decode(&registry)
@@ -244,10 +244,10 @@ func TestClusterDualAlarmRedundancy(t *testing.T) {
 		respB, errB := client.Get(alarmB)
 
 		if respA != nil {
-			respA.Body.Close()
+			_ = respA.Body.Close()
 		}
 		if respB != nil {
-			respB.Body.Close()
+			_ = respB.Body.Close()
 		}
 
 		if errA != nil && errB != nil {
@@ -264,7 +264,7 @@ func TestClusterIsotopeUniqueness(t *testing.T) {
 	if err != nil {
 		t.Skipf("cluster registry unavailable: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var registry map[string]map[string]interface{}
 	_ = json.NewDecoder(resp.Body).Decode(&registry)
@@ -290,7 +290,7 @@ func TestClusterIsotopeUniqueness(t *testing.T) {
 			if err != nil {
 				return
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			var result map[string]interface{}
 			body, _ := io.ReadAll(resp.Body)
@@ -329,7 +329,7 @@ func TestClusterRegistryStress(t *testing.T) {
 	}
 	var registry map[string]map[string]interface{}
 	_ = json.NewDecoder(resp.Body).Decode(&registry)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	numClusters := len(registry)
 	t.Logf("Stress testing registry with %d clusters", numClusters)
@@ -350,7 +350,7 @@ func TestClusterRegistryStress(t *testing.T) {
 			if err != nil {
 				return
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			var r map[string]map[string]interface{}
 			if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {

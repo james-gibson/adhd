@@ -186,7 +186,7 @@ func makeRawMCPCall(t *testing.T, endpoint string, method string, params interfa
 	if err != nil {
 		t.Fatalf("failed to call MCP: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var respBody bytes.Buffer
 	if _, err := respBody.ReadFrom(resp.Body); err != nil {
