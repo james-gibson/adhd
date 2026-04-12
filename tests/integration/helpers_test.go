@@ -16,13 +16,15 @@ import (
 	"github.com/james-gibson/adhd/internal/smokelink"
 )
 
+var testHTTPClient = &http.Client{Timeout: 5 * time.Second}
+
 // mockStatusResponse mimics ocd-smoke-alarm /status endpoint response
 type mockStatusResponse struct {
-	Service string               `json:"service"`
-	Live    bool                 `json:"live"`
-	Ready   bool                 `json:"ready"`
-	Targets []mockTargetStatus   `json:"targets"`
-	Summary mockStatusSummary    `json:"summary"`
+	Service string             `json:"service"`
+	Live    bool               `json:"live"`
+	Ready   bool               `json:"ready"`
+	Targets []mockTargetStatus `json:"targets"`
+	Summary mockStatusSummary  `json:"summary"`
 }
 
 type mockTargetStatus struct {
@@ -234,7 +236,7 @@ func DoJSONRPCCall(t *testing.T, endpoint string, method string, params interfac
 		t.Fatalf("failed to marshal request: %v", err)
 	}
 
-	resp, err := http.Post(endpoint, "application/json", bytes.NewReader(bodyBytes))
+	resp, err := testHTTPClient.Post(endpoint, "application/json", bytes.NewReader(bodyBytes))
 	if err != nil {
 		t.Fatalf("failed to make request: %v", err)
 	}

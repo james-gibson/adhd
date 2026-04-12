@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"net/http"
 	"testing"
 	"time"
 
@@ -533,7 +532,7 @@ func doMCPRequest(t *testing.T, url string, req map[string]interface{}) map[stri
 		t.Fatalf("failed to marshal request: %v", err)
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	resp, err := testHTTPClient.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("failed to make request: %v", err)
 	}

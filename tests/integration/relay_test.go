@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -55,7 +54,7 @@ func sendMCPRequest(t *testing.T, endpoint, method string, params interface{}) m
 		body["params"] = params
 	}
 	data, _ := json.Marshal(body)
-	resp, err := http.Post(endpoint, "application/json", bytes.NewReader(data))
+	resp, err := testHTTPClient.Post(endpoint, "application/json", bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("MCP call %q to %s failed: %v", method, endpoint, err)
 	}

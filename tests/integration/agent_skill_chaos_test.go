@@ -413,7 +413,7 @@ func (s *agentSkill) callTool(method string, params interface{}) map[string]inte
 	}
 
 	body, _ := json.Marshal(req)
-	resp, err := http.Post(s.endpoint, "application/json", bytes.NewReader(body))
+	resp, err := testHTTPClient.Post(s.endpoint, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil
 	}
