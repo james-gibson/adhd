@@ -115,11 +115,11 @@ func testRandomToolInvocation(t *testing.T, endpoint string, toolNames []string)
 	iterations := 50
 
 	toolInputs := map[string][]map[string]interface{}{
-		"adhd.status":         {{}, nil},
-		"adhd.lights.list":    {{}, nil},
-		"adhd.lights.get":     {{"name": "nonexistent"}, {}},
-		"adhd.isotope.status": {{}, nil},
-		"adhd.isotope.peers":  {{}, nil},
+		"adhd.status":           {{}, nil},
+		"adhd.lights.list":      {{}, nil},
+		"adhd.lights.get":       {{"name": "nonexistent"}, {}},
+		"adhd.isotope.status":   {{}, nil},
+		"adhd.isotope.peers":    {{}, nil},
 		"adhd.isotope.instance": {{}, nil},
 	}
 
@@ -301,12 +301,13 @@ func TestMCPToolsUnderConcurrentLoad(t *testing.T) {
 	const callsPerGoroutine = 50
 
 	done := make(chan error, numGoroutines)
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	for g := 0; g < numGoroutines; g++ {
 		go func(goroutineID int) {
+			// Each goroutine gets its own RNG to avoid races
+			localRand := rand.New(rand.NewSource(time.Now().UnixNano() + int64(goroutineID)))
 			for c := 0; c < callsPerGoroutine; c++ {
-				toolName := toolNames[rng.Intn(len(toolNames))]
+				toolName := toolNames[localRand.Intn(len(toolNames))]
 				respBody := makeRawMCPCall(t, addr, "tools/call", map[string]interface{}{
 					"name": toolName,
 				})

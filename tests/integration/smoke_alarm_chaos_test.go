@@ -179,7 +179,6 @@ func TestSmokeAlarmConcurrentTargets(t *testing.T) {
 // TestSmokeAlarmManyTargets validates performance with 100+ targets
 func TestSmokeAlarmManyTargets(t *testing.T) {
 	const numTargets = 100
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	// Create many mock targets
 	targets := make([]*httptest.Server, numTargets)
@@ -188,7 +187,7 @@ func TestSmokeAlarmManyTargets(t *testing.T) {
 		targets[i] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/status" {
 				states := []string{"healthy", "degraded", "outage"}
-				state := states[rng.Intn(len(states))]
+				state := states[rand.Intn(len(states))]
 
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
