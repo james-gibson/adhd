@@ -35,6 +35,10 @@ func TestMCPToolsChaos(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
 
+	if err := waitForServer(addr, 2*time.Second); err != nil {
+		t.Fatalf("server not ready: %v", err)
+	}
+
 	endpoint := addr
 
 	// Get initial tool list
@@ -290,6 +294,10 @@ func TestMCPToolsUnderConcurrentLoad(t *testing.T) {
 		t.Fatalf("failed to start server: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+
+	if err := waitForServer(addr, 2*time.Second); err != nil {
+		t.Fatalf("server not ready: %v", err)
+	}
 
 	// Get tool list
 	toolsList := callMCP(t, addr, "tools/list", nil)

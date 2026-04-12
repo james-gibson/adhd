@@ -18,6 +18,19 @@ import (
 
 var testHTTPClient = &http.Client{Timeout: 5 * time.Second}
 
+func waitForServer(addr string, maxWait time.Duration) error {
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return fmt.Errorf("server at %s not ready after %v", addr, maxWait)
+}
+
 // mockStatusResponse mimics ocd-smoke-alarm /status endpoint response
 type mockStatusResponse struct {
 	Service string             `json:"service"`
@@ -236,7 +249,16 @@ func DoJSONRPCCall(t *testing.T, endpoint string, method string, params interfac
 		t.Fatalf("failed to marshal request: %v", err)
 	}
 
-	resp, err := testHTTPClient.Post(endpoint, "application/json", bytes.NewReader(bodyBytes))
+	var resp *http.Response
+	for attempt := 0; attempt < 3; attempt++ {
+		resp, err = testHTTPClient.Post(endpoint, "application/json", bytes.NewReader(bodyBytes))
+		if err == nil {
+			break
+		}
+		if attempt < 2 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 	if err != nil {
 		t.Fatalf("failed to make request: %v", err)
 	}
