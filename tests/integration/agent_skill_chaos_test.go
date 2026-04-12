@@ -104,6 +104,10 @@ func TestConcurrentAgentSkills(t *testing.T) {
 	_ = server.Start(context.Background())
 	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
 
+	if err := waitForServer(addr, 2*time.Second); err != nil {
+		t.Fatalf("server not ready: %v", err)
+	}
+
 	endpoint := "http://" + addr + "/mcp"
 
 	// Run 5 concurrent skills
