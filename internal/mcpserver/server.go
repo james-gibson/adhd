@@ -62,12 +62,12 @@ type dynamicTool struct {
 
 // clusterPeerInfo tracks a peer ADHD instance discovered via adhd.cluster.join.
 type clusterPeerInfo struct {
-	Name      string                   `json:"name"`
-	Endpoint  string                   `json:"endpoint"` // adhd_mcp URL
-	AlarmA    string                   `json:"alarm_a"`
-	AlarmB    string                   `json:"alarm_b"`
-	Projects  []map[string]interface{} `json:"projects,omitempty"`
-	JoinedAt  time.Time                `json:"joined_at"`
+	Name     string                   `json:"name"`
+	Endpoint string                   `json:"endpoint"` // adhd_mcp URL
+	AlarmA   string                   `json:"alarm_a"`
+	AlarmB   string                   `json:"alarm_b"`
+	Projects []map[string]interface{} `json:"projects,omitempty"`
+	JoinedAt time.Time                `json:"joined_at"`
 }
 
 // PathHop records a single verified hop in a negotiated trust path.
@@ -116,7 +116,7 @@ type Server struct {
 	dynamicTools []*dynamicTool
 
 	// Cluster peers discovered via adhd.cluster.join — used for path negotiation.
-	clusterPeers    map[string]*clusterPeerInfo
+	clusterPeers map[string]*clusterPeerInfo
 
 	// Pre-negotiated trust paths, keyed by target isotope name.
 	negotiatedPaths map[string][]*NegotiatedPath
@@ -1697,8 +1697,8 @@ func (s *Server) handlePathVerify(ctx context.Context, params interface{}) (inte
 	}
 
 	return map[string]interface{}{
-		"target":  targetIsotope,
-		"paths":   results,
+		"target": targetIsotope,
+		"paths":  results,
 	}, nil
 }
 
@@ -1844,10 +1844,12 @@ func (s *Server) callPeerMCP(ctx context.Context, baseURL, method string, params
 	}
 
 	mcpURL := baseURL
-	if len(mcpURL) > 0 && mcpURL[len(mcpURL)-1] != '/' {
-		mcpURL += "/mcp"
-	} else {
+	switch {
+	case strings.HasSuffix(mcpURL, "/mcp"):
+	case strings.HasSuffix(mcpURL, "/"):
 		mcpURL += "mcp"
+	default:
+		mcpURL += "/mcp"
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mcpURL, bytes.NewReader(data))
@@ -2015,9 +2017,9 @@ type jsonrpcRequest struct {
 }
 
 type jsonrpcResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      interface{} `json:"id"`
-	Result  interface{} `json:"result,omitempty"`
+	JSONRPC string        `json:"jsonrpc"`
+	ID      interface{}   `json:"id"`
+	Result  interface{}   `json:"result,omitempty"`
 	Error   *jsonrpcError `json:"error,omitempty"`
 }
 
