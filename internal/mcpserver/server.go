@@ -835,11 +835,24 @@ func (s *Server) handleToolsCall(ctx context.Context, params interface{}) (inter
 	}
 
 	// Wrap result in MCP tools/call response format
+	var text string
+	switch r := result.(type) {
+	case string:
+		text = r
+	default:
+		data, err := json.Marshal(r)
+		if err != nil {
+			text = fmt.Sprintf("%v", r)
+		} else {
+			text = string(data)
+		}
+	}
+
 	return map[string]interface{}{
 		"content": []map[string]interface{}{
 			{
 				"type": "text",
-				"text": fmt.Sprintf("%v", result),
+				"text": text,
 			},
 		},
 	}, nil
