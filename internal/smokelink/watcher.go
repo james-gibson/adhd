@@ -61,11 +61,11 @@ type lastTargetStatus struct {
 
 // StatusResponse mimics ocd-smoke-alarm's status endpoint response
 type StatusResponse struct {
-	Service   string         `json:"service"`
-	Live      bool           `json:"live"`
-	Ready     bool           `json:"ready"`
-	Targets   []TargetStatus `json:"targets"`
-	Summary   StatusSummary  `json:"summary"`
+	Service string         `json:"service"`
+	Live    bool           `json:"live"`
+	Ready   bool           `json:"ready"`
+	Targets []TargetStatus `json:"targets"`
+	Summary StatusSummary  `json:"summary"`
 }
 
 // TargetStatus mirrors ocd-smoke-alarm's /status JSON target format
@@ -157,7 +157,8 @@ func (w *Watcher) watchViaPolling(ctx context.Context, endpoint config.SmokeAlar
 
 // pollOnce fetches status once from /status endpoint
 func (w *Watcher) pollOnce(ctx context.Context, endpoint config.SmokeAlarmEndpoint, updates chan<- LightUpdate) {
-	statusURL := strings.TrimSuffix(endpoint.Endpoint, "/") + "/status"
+	baseURL := strings.TrimSuffix(endpoint.Endpoint, "/status")
+	statusURL := baseURL + "/status"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
 	if err != nil {
@@ -237,7 +238,8 @@ func (w *Watcher) pollOnce(ctx context.Context, endpoint config.SmokeAlarmEndpoi
 // exists, sends a single LightUpdate carrying the full RemoteFeatures list.
 // 404 responses are silently ignored — older alarms don't expose /features.
 func (w *Watcher) pollFeatures(ctx context.Context, endpoint config.SmokeAlarmEndpoint, updates chan<- LightUpdate) {
-	featURL := strings.TrimSuffix(endpoint.Endpoint, "/") + "/features"
+	baseURL := strings.TrimSuffix(endpoint.Endpoint, "/features")
+	featURL := baseURL + "/features"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, featURL, nil)
 	if err != nil {
 		return
@@ -269,7 +271,8 @@ func (w *Watcher) pollFeatures(ctx context.Context, endpoint config.SmokeAlarmEn
 
 // watchViaSSE subscribes to SSE stream from smoke-alarm
 func (w *Watcher) watchViaSSE(ctx context.Context, endpoint config.SmokeAlarmEndpoint, updates chan<- LightUpdate) {
-	statusURL := strings.TrimSuffix(endpoint.Endpoint, "/") + "/status"
+	baseURL := strings.TrimSuffix(endpoint.Endpoint, "/status")
+	statusURL := baseURL + "/status"
 
 	slog.Debug("starting SSE subscription", "endpoint", endpoint.Name, "url", statusURL)
 

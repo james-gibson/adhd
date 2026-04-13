@@ -1505,6 +1505,12 @@ func (s *Server) handlePathNegotiate(ctx context.Context, params interface{}) (i
 	}
 	s.mu.RUnlock()
 
+	targetEndpoint, targetName := s.resolveTargetViaDiscovery(ctx, targetIsotope, peers)
+	if targetEndpoint != "" {
+		targetIsotope = targetName
+		peers[targetIsotope] = &clusterPeerInfo{Name: targetIsotope, Endpoint: targetEndpoint}
+	}
+
 	var paths []*NegotiatedPath
 
 	for _, peer := range peers {
@@ -1778,6 +1784,73 @@ func findEndpointInPeers(topology map[string]interface{}, name string) string {
 		}
 	}
 	return ""
+}
+
+// resolveTargetViaDiscovery resolves a target isotope by name, IP:port, or discovery URL.
+// It queries the discovery endpoint of known cluster peers to find the target.
+// Returns (endpoint, name) if found, or ("", targetIsotope) if not.
+func (s *Server) resolveTargetViaDiscovery(ctx context.Context, targetIsotope string, localPeers map[string]*clusterPeerInfo) (string, string) {
+	normalizedTarget := strings.TrimPrefix(targetIsotope, "http://")
+	normalizedTarget = strings.TrimPrefix(normalizedTarget, "https://")
+	normalizedTarget = strings.TrimSuffix(normalizedTarget, "/mcp")
+	normalizedTarget = strings.TrimSuffix(normalizedTarget, "/cluster")
+
+	for _, peer := range localPeers {
+		if peer.Endpoint == "" {
+			continue
+		}
+		normalizedEndpoint := strings.TrimPrefix(peer.Endpoint, "http://")
+		normalizedEndpoint = strings.TrimSuffix(normalizedEndpoint, "/mcp")
+		if strings.Contains(normalizedEndpoint, normalizedTarget) || strings.Contains(normalizedTarget, normalizedEndpoint) {
+			return peer.Endpoint, peer.Name
+		}
+		discoveryURL := ""
+		if peer.AlarmA != "" {
+			base := strings.TrimSuffix(peer.AlarmA, "/status")
+			discoveryURL = base + ":19100/cluster"
+		} else if peer.Endpoint != "" {
+			derived := peer.Endpoint
+			if idx := strings.LastIndex(derived, ":"); idx > 0 {
+				derived = derived[:idx] + ":19100/cluster"
+			}
+			discoveryURL = derived
+		}
+		if discoveryURL == "" {
+			continue
+		}
+		req, err := http.NewRequestWithContext(ctx, "GET", discoveryURL, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != 200 {
+			continue
+		}
+		var clusters map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&clusters); err != nil {
+			continue
+		}
+		for name, info := range clusters {
+			infoMap, _ := info.(map[string]interface{})
+			if infoMap == nil {
+				continue
+			}
+			if name == targetIsotope {
+				endpoint, _ := infoMap["adhd_mcp"].(string)
+				return endpoint, name
+			}
+			if endpoint, _ := infoMap["adhd_mcp"].(string); endpoint != "" {
+				if strings.Contains(endpoint, targetIsotope) || strings.Contains(targetIsotope, strings.Split(endpoint, "://")[1]) {
+					return endpoint, name
+				}
+			}
+		}
+	}
+	return "", targetIsotope
 }
 
 // registerProjectTool registers an adhd.project.<name>.call dynamic tool that
