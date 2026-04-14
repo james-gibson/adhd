@@ -63,9 +63,9 @@ type dynamicTool struct {
 // clusterPeerInfo tracks a peer ADHD instance discovered via adhd.cluster.join.
 type clusterPeerInfo struct {
 	Name     string                   `json:"name"`
-	Endpoint string                   `json:"endpoint"` // adhd_mcp URL
-	AlarmA   string                   `json:"alarm_a"`
-	AlarmB   string                   `json:"alarm_b"`
+	Endpoint string                   `json:"endpoint"` // adhd.mcp URL
+	AlarmA   string                   `json:"alarm-a"`
+	AlarmB   string                   `json:"alarm-b"`
 	Projects []map[string]interface{} `json:"projects,omitempty"`
 	JoinedAt time.Time                `json:"joined_at"`
 }
@@ -510,7 +510,7 @@ func (s *Server) handleToolsList() interface{} {
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"target_url": map[string]interface{}{
+					"target.url": map[string]interface{}{
 						"type":        "string",
 						"description": "Base URL of the peer MCP server",
 					},
@@ -523,7 +523,7 @@ func (s *Server) handleToolsList() interface{} {
 						"description": "Fresh nonce for this challenge",
 					},
 				},
-				"required": []string{"target_url", "feature_id", "nonce"},
+				"required": []string{"target.url", "feature_id", "nonce"},
 			},
 		},
 		{
@@ -536,24 +536,24 @@ func (s *Server) handleToolsList() interface{} {
 						"type":        "string",
 						"description": "Cluster name",
 					},
-					"alarm_a": map[string]interface{}{
+					"alarm-a": map[string]interface{}{
 						"type":        "string",
 						"description": "HTTP URL of the cluster primary smoke-alarm",
 					},
-					"alarm_b": map[string]interface{}{
+					"alarm-b": map[string]interface{}{
 						"type":        "string",
 						"description": "HTTP URL of the cluster secondary smoke-alarm",
 					},
-					"adhd_mcp": map[string]interface{}{
+					"adhd.mcp": map[string]interface{}{
 						"type":        "string",
 						"description": "HTTP URL of the cluster's own ADHD MCP server",
 					},
-					"github_repos": map[string]interface{}{
+					"github.repos": map[string]interface{}{
 						"type":        "array",
 						"description": "GitHub repo slugs owned by this cluster",
 						"items":       map[string]interface{}{"type": "string"},
 					},
-					"honeypot_tools": map[string]interface{}{
+					"honeypot-tools": map[string]interface{}{
 						"type":        "array",
 						"description": "Decoy tool descriptors to register. Callers who invoke these are logged as untrusted.",
 						"items": map[string]interface{}{
@@ -629,7 +629,7 @@ func (s *Server) handleToolsList() interface{} {
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"target_isotope": map[string]interface{}{
+					"target.isotope": map[string]interface{}{
 						"type":        "string",
 						"description": "Name of the target isotope to negotiate paths to",
 					},
@@ -638,7 +638,7 @@ func (s *Server) handleToolsList() interface{} {
 						"description": "Feature ID to verify at each hop",
 					},
 				},
-				"required": []string{"target_isotope", "feature_id"},
+				"required": []string{"target.isotope", "feature_id"},
 			},
 		},
 		{
@@ -647,7 +647,7 @@ func (s *Server) handleToolsList() interface{} {
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"target_isotope": map[string]interface{}{
+					"target.isotope": map[string]interface{}{
 						"type":        "string",
 						"description": "Target isotope whose paths to re-verify",
 					},
@@ -656,7 +656,7 @@ func (s *Server) handleToolsList() interface{} {
 						"description": "Feature ID to use for re-verification challenges",
 					},
 				},
-				"required": []string{"target_isotope", "feature_id"},
+				"required": []string{"target.isotope", "feature_id"},
 			},
 		},
 		{
@@ -665,7 +665,7 @@ func (s *Server) handleToolsList() interface{} {
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"target_isotope": map[string]interface{}{
+					"target.isotope": map[string]interface{}{
 						"type":        "string",
 						"description": "Filter to a specific target (optional)",
 					},
@@ -1050,11 +1050,11 @@ func (s *Server) handleRungVerify(params interface{}) (interface{}, *jsonrpcErro
 // It sends adhd.rung.respond to the peer, then adhd.rung.verify, and reports
 // whether the peer successfully proved it has a real implementation.
 func (s *Server) handleRungChallenge(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
-	p, err := parseStringParams(params, "target_url", "feature_id", "nonce")
+	p, err := parseStringParams(params, "target.url", "feature_id", "nonce")
 	if err != nil {
 		return nil, &jsonrpcError{Code: -32602, Message: err.Error()}
 	}
-	targetURL := p["target_url"]
+	targetURL := p["target.url"]
 	featureID := p["feature_id"]
 	nonce := p["nonce"]
 
@@ -1114,10 +1114,10 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 	if err != nil {
 		return nil, &jsonrpcError{Code: -32602, Message: err.Error()}
 	}
-	// alarm_a and alarm_b are optional — extract without requiring them.
+	// alarm-a and alarm-b are optional — extract without requiring them.
 	m, _ := params.(map[string]interface{})
-	alarmA, _ := m["alarm_a"].(string)
-	alarmB, _ := m["alarm_b"].(string)
+	alarmA, _ := m["alarm-a"].(string)
+	alarmB, _ := m["alarm-b"].(string)
 
 	if s.clusterJoinHandler == nil {
 		return map[string]interface{}{"accepted": false, "reason": "not configured"}, nil
@@ -1128,7 +1128,7 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 
 	// Register per-repo Dependabot tools for any GitHub repos in this cluster.
 	var repoCount int
-	if reposRaw, ok := m["github_repos"]; ok {
+	if reposRaw, ok := m["github.repos"]; ok {
 		if reposSlice, ok := reposRaw.([]interface{}); ok {
 			for _, r := range reposSlice {
 				if slug, ok := r.(string); ok && slug != "" {
@@ -1160,7 +1160,7 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 	}
 
 	// Track this cluster peer for path negotiation.
-	adhdMCP, _ := m["adhd_mcp"].(string)
+	adhdMCP, _ := m["adhd.mcp"].(string)
 	s.mu.Lock()
 	s.clusterPeers[p["name"]] = &clusterPeerInfo{
 		Name:     p["name"],
@@ -1173,7 +1173,7 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 
 	// Register honeypot tools sent by the joining cluster.
 	var honeypotCount int
-	if hpRaw, ok := m["honeypot_tools"]; ok {
+	if hpRaw, ok := m["honeypot-tools"]; ok {
 		if hpSlice, ok := hpRaw.([]interface{}); ok {
 			for _, h := range hpSlice {
 				hpMap, ok := h.(map[string]interface{})
@@ -1193,8 +1193,8 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 
 	slog.Info("adhd.cluster.join accepted",
 		"name", p["name"],
-		"alarm_a", alarmA,
-		"alarm_b", alarmB,
+		"alarm-a", alarmA,
+		"alarm-b", alarmB,
 		"repos", repoCount,
 		"projects", projectCount,
 		"honeypots", honeypotCount,
@@ -1489,9 +1489,9 @@ func (s *Server) handlePathNegotiate(ctx context.Context, params interface{}) (i
 	if !ok {
 		return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
 	}
-	targetIsotope, _ := m["target_isotope"].(string)
+	targetIsotope, _ := m["target.isotope"].(string)
 	if targetIsotope == "" {
-		return nil, &jsonrpcError{Code: -32602, Message: "target_isotope is required"}
+		return nil, &jsonrpcError{Code: -32602, Message: "target.isotope is required"}
 	}
 	featureID, _ := m["feature_id"].(string)
 	if featureID == "" {
@@ -1505,10 +1505,22 @@ func (s *Server) handlePathNegotiate(ctx context.Context, params interface{}) (i
 	}
 	s.mu.RUnlock()
 
+	slog.Debug("path negotiate: resolving target",
+		"target", targetIsotope,
+		"peer_count", len(peers))
+
 	targetEndpoint, targetName := s.resolveTargetViaDiscovery(ctx, targetIsotope, peers)
+	slog.Debug("path negotiate: resolved",
+		"target", targetIsotope,
+		"resolved_endpoint", targetEndpoint,
+		"resolved_name", targetName)
 	if targetEndpoint != "" {
+		originalTarget := targetIsotope
 		targetIsotope = targetName
-		peers[targetIsotope] = &clusterPeerInfo{Name: targetIsotope, Endpoint: targetEndpoint}
+		peers[targetName] = &clusterPeerInfo{Name: targetName, Endpoint: targetEndpoint}
+		if originalTarget != targetName {
+			peers[originalTarget] = &clusterPeerInfo{Name: targetName, Endpoint: targetEndpoint}
+		}
 	}
 
 	var paths []*NegotiatedPath
@@ -1522,7 +1534,7 @@ func (s *Server) handlePathNegotiate(ctx context.Context, params interface{}) (i
 			// Direct 1-hop path: challenge the target peer directly.
 			nonce := generateNonce()
 			res, err := s.callPeerMCP(ctx, peer.Endpoint, "adhd.rung.challenge", map[string]interface{}{
-				"target_url": peer.Endpoint,
+				"target.url": peer.Endpoint,
 				"feature_id": featureID,
 				"nonce":      nonce,
 			})
@@ -1578,7 +1590,7 @@ func (s *Server) handlePathNegotiate(ctx context.Context, params interface{}) (i
 		// Challenge hop-1 (the intermediary).
 		nonce1 := generateNonce()
 		res1, err := s.callPeerMCP(ctx, peer.Endpoint, "adhd.rung.challenge", map[string]interface{}{
-			"target_url": peer.Endpoint,
+			"target.url": peer.Endpoint,
 			"feature_id": featureID,
 			"nonce":      nonce1,
 		})
@@ -1589,7 +1601,7 @@ func (s *Server) handlePathNegotiate(ctx context.Context, params interface{}) (i
 		// Ask hop-1 to challenge hop-2 (the target) on our behalf.
 		nonce2 := generateNonce()
 		res2, err := s.callPeerMCP(ctx, peer.Endpoint, "adhd.rung.challenge", map[string]interface{}{
-			"target_url": targetEndpoint,
+			"target.url": targetEndpoint,
 			"feature_id": featureID,
 			"nonce":      nonce2,
 		})
@@ -1664,9 +1676,9 @@ func (s *Server) handlePathVerify(ctx context.Context, params interface{}) (inte
 	if !ok {
 		return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
 	}
-	targetIsotope, _ := m["target_isotope"].(string)
+	targetIsotope, _ := m["target.isotope"].(string)
 	if targetIsotope == "" {
-		return nil, &jsonrpcError{Code: -32602, Message: "target_isotope is required"}
+		return nil, &jsonrpcError{Code: -32602, Message: "target.isotope is required"}
 	}
 	featureID, _ := m["feature_id"].(string)
 	if featureID == "" {
@@ -1692,7 +1704,7 @@ func (s *Server) handlePathVerify(ctx context.Context, params interface{}) (inte
 		for _, hop := range path.Hops {
 			nonce := generateNonce()
 			res, err := s.callPeerMCP(ctx, hop.Endpoint, "adhd.rung.challenge", map[string]interface{}{
-				"target_url": hop.Endpoint,
+				"target.url": hop.Endpoint,
 				"feature_id": featureID,
 				"nonce":      nonce,
 			})
@@ -1725,7 +1737,7 @@ func (s *Server) handlePathVerify(ctx context.Context, params interface{}) (inte
 func (s *Server) handlePathList(params interface{}) (interface{}, *jsonrpcError) {
 	var filterTarget string
 	if m, ok := params.(map[string]interface{}); ok {
-		filterTarget, _ = m["target_isotope"].(string)
+		filterTarget, _ = m["target.isotope"].(string)
 	}
 
 	s.mu.RLock()
@@ -1795,12 +1807,21 @@ func (s *Server) resolveTargetViaDiscovery(ctx context.Context, targetIsotope st
 	normalizedTarget = strings.TrimSuffix(normalizedTarget, "/mcp")
 	normalizedTarget = strings.TrimSuffix(normalizedTarget, "/cluster")
 
+	slog.Debug("resolve target: checking local peers",
+		"target", targetIsotope,
+		"normalized", normalizedTarget)
+
 	for _, peer := range localPeers {
 		if peer.Endpoint == "" {
 			continue
 		}
 		normalizedEndpoint := strings.TrimPrefix(peer.Endpoint, "http://")
 		normalizedEndpoint = strings.TrimSuffix(normalizedEndpoint, "/mcp")
+		slog.Debug("resolve target: peer endpoint",
+			"peer_name", peer.Name,
+			"endpoint", peer.Endpoint,
+			"normalized", normalizedEndpoint,
+			"match", strings.Contains(normalizedEndpoint, normalizedTarget) || strings.Contains(normalizedTarget, normalizedEndpoint))
 		if strings.Contains(normalizedEndpoint, normalizedTarget) || strings.Contains(normalizedTarget, normalizedEndpoint) {
 			return peer.Endpoint, peer.Name
 		}
@@ -1840,10 +1861,10 @@ func (s *Server) resolveTargetViaDiscovery(ctx context.Context, targetIsotope st
 				continue
 			}
 			if name == targetIsotope {
-				endpoint, _ := infoMap["adhd_mcp"].(string)
+				endpoint, _ := infoMap["adhd.mcp"].(string)
 				return endpoint, name
 			}
-			if endpoint, _ := infoMap["adhd_mcp"].(string); endpoint != "" {
+			if endpoint, _ := infoMap["adhd.mcp"].(string); endpoint != "" {
 				if strings.Contains(endpoint, targetIsotope) || strings.Contains(targetIsotope, strings.Split(endpoint, "://")[1]) {
 					return endpoint, name
 				}

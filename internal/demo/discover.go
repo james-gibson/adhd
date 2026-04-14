@@ -97,7 +97,7 @@ func Browse(ctx context.Context, timeout time.Duration) ([]ClusterInfo, error) {
 				ch <- result{err: browseCtx.Err()}
 				return
 			case <-ticker.C:
-				clusters, err := fetchRegistry(browseCtx, fmt.Sprintf("http://127.0.0.1:%d/cluster", DiscoveryPort))
+				clusters, err := fetchRegistry(browseCtx, fmt.Sprintf("http://_smoke-alarm.tcp:%d/cluster", DiscoveryPort))
 				if err == nil && len(clusters) > 0 {
 					ch <- result{clusters: clusters}
 					return

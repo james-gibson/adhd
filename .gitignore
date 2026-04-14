@@ -5,6 +5,7 @@
 *.so
 *.dylib
 dist/
+state/
 # Test binary, built with `go test -c`
 *.test
 
