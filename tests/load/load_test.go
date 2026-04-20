@@ -35,7 +35,7 @@ import (
 // node represents a running headless ADHD instance in the test topology.
 type node struct {
 	srv     *headless.Server
-	addr    string // "127.0.0.1:PORT"
+	addr    string // "localhost:PORT"
 	logPath string
 	dir     string // per-node sub-dir under the test root
 }
@@ -46,7 +46,7 @@ func (n *node) endpoint() string { return "http://" + n.addr + "/mcp" }
 // freeAddr returns an available TCP address (binds then closes immediately).
 func freeAddr(t *testing.T) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		t.Fatalf("freeAddr: %v", err)
 	}

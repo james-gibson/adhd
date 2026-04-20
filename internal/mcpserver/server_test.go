@@ -16,7 +16,7 @@ import (
 
 // freeAddr returns a free TCP address
 func freeAddr(t *testing.T) string {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		t.Fatalf("failed to find free port: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestServerDisabledServer(t *testing.T) {
 
 	cfg := config.MCPServerConfig{
 		Enabled: false,
-		Addr:    "127.0.0.1:9999",
+		Addr:    "localhost:9999",
 	}
 
 	server := NewServer(cfg, cluster)

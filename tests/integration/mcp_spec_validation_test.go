@@ -20,7 +20,7 @@ var specClient = &http.Client{Timeout: 5 * time.Second}
 // This is the kind of check that fire-marshal should perform before deployment
 func TestMCPSpecCompliance(t *testing.T) {
 	// Get a free port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		t.Fatalf("failed to get free port: %v", err)
 	}

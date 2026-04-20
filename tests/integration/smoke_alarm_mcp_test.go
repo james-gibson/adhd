@@ -68,7 +68,7 @@ func TestADHDProbesSmokeAlarmMCPFailure(t *testing.T) {
 	binaries := []config.Binary{
 		{
 			Name:     "smoke-alarm-down",
-			Endpoint: "http://127.0.0.1:1", // unreachable port
+			Endpoint: "http://localhost:1", // unreachable port
 			Features: []config.Feature{
 				{Name: "service-monitoring"},
 			},

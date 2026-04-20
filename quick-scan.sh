@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
-MCP_URL="http://localhost:50925/mcp"
+MCP_URL="http://localhost:60502/mcp"
 CLUSTER_URL="http://localhost:19100/cluster"
 REFRESH_INTERVAL=15
 CURL_TIMEOUT=3
 MAX_PARALLEL=6
-PROPAGATION_WAIT=3
+PROPAGATION_WAIT=10
 
 BOLD='\033[1m'
 DIM='\033[2m'
@@ -16,11 +16,12 @@ CYAN='\033[36m'
 MAGENTA='\033[35m'
 RESET='\033[0m'
 
-PRIME_URL="$MCP_URL"
+PRIME_URL="http://localhost:60065/mcp"
 PRIME_ISOTOPE=""
 declare -A KNOWN_ENDPOINTS
 declare -A PROPAGATION_RESULTS
 RUNG_PROGRESS_TOKEN=0
+PROPAGATION_RESULTS=()
 
 status_icon() {
   case "$1" in
@@ -56,7 +57,7 @@ rewrite_endpoint() {
 }
 
 ms_now() {
-  date +%s%3N 2>/dev/null || echo $(($(date +%s) * 1000))
+  echo $(date +%s%3N)
 }
 
 mcp_post() {
@@ -81,10 +82,8 @@ rung_respond() {
         "method": "adhd.rung.respond",
         "params": {
           "name": "adhd.rung.respond",
-          "arguments": {
-            "feature_id": "adhd",
-            "nonce": $nonce
-          },
+          "feature_id": "adhd",
+          "nonce": ($nonce),
           "_meta": {
             "progressToken": ($token)
           }
@@ -123,9 +122,9 @@ probe_all_nodes() {
 
     (
       local t0 t1
-      t0=$(ms_now)
+      t0=$(date +%s)
       resp=$(mcp_post "$url" "adhd.isotope.status" 6)
-      t1=$(ms_now)
+      t1=$(date +%s)
       echo "$resp" > "$tmpdir/${safe_name}.isotope"
       echo $((t1 - t0)) > "$tmpdir/${safe_name}.latency"
       mcp_post "$url" "adhd.isotope.instance" 1 > "$tmpdir/${safe_name}.instance"
@@ -155,7 +154,7 @@ relocate_prime() {
       return 0
     fi
   done
-  PRIME_URL=""
+  # PRIME_URL=""
   return 1
 }
 
@@ -167,7 +166,7 @@ relocate_prime() {
 #   4. Send the same nonce to every peer — if they echo it back cleanly, it propagated
 run_propagation_test() {
   local tmpdir="$1"
-  PROPAGATION_RESULTS=()
+
 
   [ -z "$PRIME_URL" ] && return
 
@@ -180,7 +179,9 @@ run_propagation_test() {
   # Step 1: ring the prime
   local reg_resp
   reg_resp=$(rung_respond "$PRIME_URL" "$nonce" "$token")
-
+  local prime_echo
+  prime_echo=$(echo "$reg_resp" | jq -r '.result.nonce // .result // empty' 2>/dev/null)
+  echo -e "response: ${reg_resp} | echo ${prime_echo}"
   if [ -z "$reg_resp" ] || echo "$reg_resp" | jq -e '.error' > /dev/null 2>&1; then
     local reason
     reason=$(echo "$reg_resp" | jq -r '.error.message // "no response"' 2>/dev/null)
@@ -189,8 +190,7 @@ run_propagation_test() {
   fi
 
   # Capture what the prime echoed back
-  local prime_echo
-  prime_echo=$(echo "$reg_resp" | jq -r '.result.content[0].text // .result // empty' 2>/dev/null)
+# echo -e "$reg_resp $prime_echo"
   PROPAGATION_RESULTS["_register"]="ok|$nonce|$prime_echo"
 
   # Step 2: wait for propagation
@@ -217,14 +217,16 @@ run_propagation_test() {
 
     (
       local t0 t1
-      t0=$(ms_now)
+      t0=$(date +%s)
       local resp
       resp=$(rung_respond "$url" "$nonce" "$peer_token")
-      t1=$(ms_now)
+      echo -e "response: ${resp}"
+      t1=$(date +%s)
       local latency=$((t1 - t0))
 
       if [ -z "$resp" ]; then
         echo "unreachable|${latency}ms" > "$tmpdir/${safe_name}.propagation"
+
       elif echo "$resp" | jq -e '.error' > /dev/null 2>&1; then
         local reason
         reason=$(echo "$resp" | jq -r '.error.message // "error"')
@@ -232,6 +234,7 @@ run_propagation_test() {
       else
         # Extract the response text — adjust path if the API shape differs
         local echo_val
+        echo -e "$resp"
         echo_val=$(echo "$resp" | jq -r '.result.content[0].text // .result // empty' 2>/dev/null)
         # Check if the nonce appears in the response (propagation confirmed)
         if echo "$echo_val" | grep -q "$nonce" 2>/dev/null || \
@@ -250,7 +253,7 @@ run_propagation_test() {
 
   # Read results
   for name in "${!KNOWN_ENDPOINTS[@]}"; do
-    [ "${KNOWN_ENDPOINTS[$name]}" = "$PRIME_URL" ] && continue
+    # [ "${KNOWN_ENDPOINTS[$name]}" = "$PRIME_URL" ] && continue
     local safe_name
     safe_name=$(echo "$name" | tr '/' '_')
     local pfile="$tmpdir/${safe_name}.propagation"
@@ -265,12 +268,12 @@ bootstrap() {
     return 1
   fi
   echo -e "${DIM}Found ${#KNOWN_ENDPOINTS[@]} nodes. Resolving prime isotope...${RESET}"
-  PRIME_ISOTOPE=$(mcp_post "$MCP_URL" "adhd.isotope.instance" 1 | jq -r '.result.isotope // empty')
+  PRIME_ISOTOPE=$(mcp_post "$PRIME_URL" "adhd.isotope.instance" 1 | jq -r '.result.isotope // empty')
   if [ -z "$PRIME_ISOTOPE" ]; then
-    echo -e "${RED}✘ Could not reach $MCP_URL${RESET}"
+    echo -e "${RED}✘ Could not reach $PRIME_URL${RESET}"
     return 1
   fi
-  PRIME_URL="$MCP_URL"
+  PRIME_URL="http://localhost:60060/mcp"
   echo -e "${GREEN}✔ Anchored to isotope: ${DIM}$PRIME_ISOTOPE${RESET}"
   sleep 1
   return 0
@@ -284,11 +287,12 @@ scan() {
   trap "rm -rf '$tmpdir'" RETURN
 
   # Node probes and propagation test run concurrently
+
+
   probe_all_nodes "$tmpdir" &
   local probe_pid=$!
 
-  run_propagation_test "$tmpdir" &
-  local prop_pid=$!
+
 
   wait "$probe_pid"
   relocate_prime "$tmpdir"
@@ -301,12 +305,15 @@ scan() {
     lights_resp=$(mcp_post "$PRIME_URL" "adhd.lights.list" 5)
   fi
 
-  wait "$prop_pid"
+  run_propagation_test "$tmpdir" &
+  local prop_pid=$!
+
+
 
   clear
   echo ""
   echo -e "${BOLD}ADHD Quick Scan${RESET}  ${DIM}$(date '+%I:%M:%S %p')  — refreshing every ${REFRESH_INTERVAL}s  (Ctrl-C to quit)${RESET}"
-  echo -e "${DIM}Cluster: $CLUSTER_URL  |  Anchored isotope: $PRIME_ISOTOPE  |  Nodes: ${#KNOWN_ENDPOINTS[@]}${RESET}"
+  echo -e "${DIM}Cluster: $CLUSTER_URL  |  Anchored isotope: $PRIME_ISOTOPE  |  Nodes: ${#KNOWN_ENDPOINTS[@]}${RESET}  | Prime: $PRIME_URL"
   echo ""
 
   # ── Prime summary ────────────────────────────────────────────────────────
@@ -376,11 +383,11 @@ scan() {
     echo -e "  ${DIM}No prime available or lights unavailable${RESET}"
   fi
   echo ""
-
+  wait "$prop_pid"
   # ── Rung propagation results ──────────────────────────────────────────────
   echo -e "${CYAN}${BOLD}▸ Rung Propagation  ${DIM}(nonce challenge via adhd.rung.respond, wait: ${PROPAGATION_WAIT}s)${RESET}"
   echo -e "${DIM}────────────────────────────────────────${RESET}"
-
+# echo -e "${PROPAGATION_RESULTS}"
   local reg_result="${PROPAGATION_RESULTS[_register]:-}"
 
   if [ -z "$reg_result" ]; then
@@ -393,6 +400,7 @@ scan() {
     local nonce prime_echo
     nonce=$(echo "$reg_result"     | cut -d'|' -f2)
     prime_echo=$(echo "$reg_result" | cut -d'|' -f3-)
+    echo -e "${PROPAGATION_RESULTS}"
     echo -e "  ${GREEN}✔ Prime rang${RESET}  ${DIM}nonce: $nonce${RESET}"
     [ -n "$prime_echo" ] && echo -e "  ${DIM}  echo: $prime_echo${RESET}"
     echo ""
@@ -488,4 +496,3 @@ while true; do
   scan
   sleep "$REFRESH_INTERVAL"
 done
-

@@ -194,7 +194,7 @@ func TestFireMarshalClusterReport(t *testing.T) {
 	srvSSE := ts(t, alarmSSE)
 
 	// alarm 5: dead (unreachable) — use a random closed port
-	deadAddr := "http://127.0.0.1:1"
+	deadAddr := "http://localhost:1"
 
 	endpoints := []config.SmokeAlarmEndpoint{
 		{Name: "alarm-healthy", Endpoint: srvHealthy.URL, Interval: 50 * time.Millisecond, UseSSE: false},
@@ -419,7 +419,7 @@ func TestFireMarshalFullReportWithMCPAndWatcher(t *testing.T) {
 	cfg := &config.Config{
 		MCPServer: config.MCPServerConfig{
 			Enabled: true,
-			Addr:    "127.0.0.1:0",
+			Addr:    "localhost:0",
 		},
 		SmokeAlarm: []config.SmokeAlarmEndpoint{
 			{Name: "cluster-a", Endpoint: srvA.URL, Interval: 50 * time.Millisecond},

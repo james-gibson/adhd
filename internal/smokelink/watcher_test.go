@@ -231,7 +231,7 @@ func TestWatcherHandlesUnreachableEndpoint(t *testing.T) {
 	endpoints := []config.SmokeAlarmEndpoint{
 		{
 			Name:     "unreachable",
-			Endpoint: "http://127.0.0.1:1", // Port 1 is unlikely to be open
+			Endpoint: "http://localhost:1", // Port 1 is unlikely to be open
 			Interval: 50 * time.Millisecond,
 		},
 	}

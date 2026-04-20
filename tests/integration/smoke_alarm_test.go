@@ -303,7 +303,7 @@ func TestSmokeAlarmUnreachableEndpoint(t *testing.T) {
 	endpoints := []config.SmokeAlarmEndpoint{
 		{
 			Name:     "unreachable",
-			Endpoint: "http://127.0.0.1:1",
+			Endpoint: "http://localhost:1",
 			Interval: 50 * time.Millisecond,
 		},
 	}

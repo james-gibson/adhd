@@ -1,6 +1,4 @@
-@adhd
-@z0-physical
-@domain-headless
+@adhd @z0-physical @domain-headless
 Feature: ADHD Headless Mode
   adhd --headless runs without a TUI: it starts the MCP server, polls
   smoke-alarm endpoints, logs all MCP traffic as JSONL, and registers
@@ -11,7 +9,6 @@ Feature: ADHD Headless Mode
 
   Background:
     Given adhd is started with --headless
-
   # ── startup ───────────────────────────────────────────────────────────────────
 
   Scenario: headless mode starts the MCP server on the configured address
@@ -40,7 +37,6 @@ Feature: ADHD Headless Mode
     When an MCP request is processed
     Then a JSONL entry is written to stdout
     And stderr is used only for structured slog output
-
   # ── smoke-alarm integration ───────────────────────────────────────────────────
 
   Scenario: headless mode polls smoke-alarm endpoints from config
@@ -50,9 +46,9 @@ Feature: ADHD Headless Mode
     And light states are updated from each /status response
 
   Scenario: headless mode registers with smoke-alarm as isotope when --smoke-alarm is provided
-    Given adhd is started with --headless --smoke-alarm=http://127.0.0.1:8080
+    Given adhd is started with --headless --smoke-alarm=http://localhost:8080
     When adhd starts
-    Then adhd POSTs to http://127.0.0.1:8080/isotope/register
+    Then adhd POSTs to http://localhost:8080/isotope/register
     And the smoke-alarm's isotope list includes adhd
 
   Scenario: headless mode logs a warning and continues when isotope registration fails
@@ -61,7 +57,6 @@ Feature: ADHD Headless Mode
     Then a WARN entry is logged: "failed to register as isotope"
     And adhd continues running
     And the MCP server is still available
-
   # ── feature loading ───────────────────────────────────────────────────────────
   # Headless mode loads features from the local filesystem relative to the
   # current working directory, exactly as TUI mode does. When the working
@@ -82,7 +77,6 @@ Feature: ADHD Headless Mode
     Then no feature lights are created
     And adhd.features.list MCP tool returns an empty list
     And no error is raised for the missing path
-
   # ── shutdown ──────────────────────────────────────────────────────────────────
 
   Scenario: headless mode shuts down cleanly on SIGTERM
@@ -97,7 +91,6 @@ Feature: ADHD Headless Mode
     Given adhd is running with --headless
     When SIGINT is delivered
     Then the shutdown sequence completes without error
-
   # ── lezz demo topology ────────────────────────────────────────────────────────
   # In a lezz demo cluster, headless adhd and TUI adhd are separate processes.
   # The headless instance serves MCP tools; the TUI instance visualizes health.
@@ -117,7 +110,6 @@ Feature: ADHD Headless Mode
     Then adhd builds a config from alarm_a and alarm_b URLs only
     And adhd_mcp URL is not used by the TUI adhd
     And the TUI instance operates independently of the headless instance
-
   # ── TUI certification of headless via isotope probe ───────────────────────
   # The TUI dashboard probes the smoke-alarm's /isotope endpoint to observe
   # whether headless adhd has registered. A non-empty response is structural

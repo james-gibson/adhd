@@ -123,7 +123,7 @@ func MockSmokeAlarmServer(t *testing.T, initialTargets []mockTargetStatus) (
 
 // FreeAddr returns a free TCP address (port 0)
 func FreeAddr(t *testing.T) string {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		t.Fatalf("failed to find free port: %v", err)
 	}

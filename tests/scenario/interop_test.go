@@ -93,8 +93,8 @@ type alarmInstance struct {
 	cancel     context.CancelFunc
 	stdout     *bytes.Buffer
 	stderr     *bytes.Buffer
-	healthAddr string // "127.0.0.1:PORT"
-	StatusURL  string // "http://127.0.0.1:PORT/status"
+	healthAddr string // "localhost:PORT"
+	StatusURL  string // "http://localhost:PORT/status"
 }
 
 // startSmokeAlarmInstance builds a config YAML, starts ocd-smoke-alarm as a
@@ -235,10 +235,10 @@ func pollUntilOK(ctx context.Context, url string) error {
 	}
 }
 
-// freeLocalAddr returns "127.0.0.1:PORT" with a free TCP port.
+// freeLocalAddr returns "localhost:PORT" with a free TCP port.
 func freeLocalAddr(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		t.Fatalf("freeLocalAddr: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestInteropGherkinCoverage(t *testing.T) {
 	cfg := &config.Config{
 		MCPServer: config.MCPServerConfig{
 			Enabled: true,
-			Addr:    "127.0.0.1:0",
+			Addr:    "localhost:0",
 		},
 		SmokeAlarm: []config.SmokeAlarmEndpoint{
 			{Name: "itest-gh-healthy", Endpoint: alarmHealthy.StatusURL, Interval: 50 * time.Millisecond},

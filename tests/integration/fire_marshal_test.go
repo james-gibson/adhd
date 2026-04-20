@@ -24,7 +24,7 @@ func TestFireMarshalDiscoveryADHD(t *testing.T) {
 		Status: lights.StatusGreen,
 	})
 
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 	addr := listener.Addr().String()
 	_ = listener.Close()
 
@@ -81,7 +81,7 @@ func TestFireMarshalDiscoveryADHD(t *testing.T) {
 func TestFireMarshalToolsListADHD(t *testing.T) {
 	cluster := lights.NewCluster()
 
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 	addr := listener.Addr().String()
 	_ = listener.Close()
 
@@ -175,7 +175,7 @@ func TestFireMarshalProbeADHDStatus(t *testing.T) {
 	cluster.Add(&lights.Light{Name: "db", Status: lights.StatusRed})
 	cluster.Add(&lights.Light{Name: "cache", Status: lights.StatusYellow})
 
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 	addr := listener.Addr().String()
 	_ = listener.Close()
 
@@ -247,7 +247,7 @@ func TestFireMarshalProbeADHDLightsList(t *testing.T) {
 		Details: "connection refused",
 	})
 
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 	addr := listener.Addr().String()
 	_ = listener.Close()
 
@@ -322,7 +322,7 @@ func TestFireMarshalProbeADHDLightsGet(t *testing.T) {
 		Details: "service down",
 	})
 
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 	addr := listener.Addr().String()
 	_ = listener.Close()
 
@@ -387,7 +387,7 @@ func TestFireMarshalComplianceAllTools(t *testing.T) {
 		})
 	}
 
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 	addr := listener.Addr().String()
 	_ = listener.Close()
 
@@ -454,7 +454,7 @@ func TestFireMarshalComplianceAllTools(t *testing.T) {
 func TestFireMarshalErrorHandling(t *testing.T) {
 	cluster := lights.NewCluster()
 
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 	addr := listener.Addr().String()
 	_ = listener.Close()
 

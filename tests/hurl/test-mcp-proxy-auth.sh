@@ -21,14 +21,31 @@ echo "Registry: $REGISTRY_URL"
 echo ""
 
 # Fetch servers with public endpoints
-SERVERS=$(curl -s "$REGISTRY_URL" | jq -r '.servers[] | select(.server.remotes != null) | .server | "\(.name) \(.remotes[0].url)"' | sort -u)
-SERVERS="temp https://api.pricepertoken.com/mcp\n ${SERVERS}"
+# Fetch server list
+echo "Fetching server list from registry..."
+
+SERVERS=$(curl "https://remote-mcp-servers.com/api/v0/servers?limit=100" | jq -r '
+  .servers[] |
+  if .server then
+    select(.server.remotes != null) | [.server.name, (.server.remotes[].url)]
+  else
+    select(.remotes != null) | [.name, (.remotes[].url)]
+  end | @tsv
+' | sort -u)
+#SERVERS="$(curl "https://remote-mcp-servers.com/api/v0/servers?limit=80" | jq -r '.servers[] | select(.server.remotes != null) | "\(.name) \(.remotes[0].url)"' | sort -u)"
+#SERVERS="temp https://api.pricepertoken.com/mcp/mcp \n ${SERVERS}" 
+SERVERS+=$(curl -s "$REGISTRY_URL" | jq -r '.servers[] | select(.server.remotes != null) | .server | "\(.name) \\t \(.remotes[0].url)"' | sort -u)
+if [ -z "$SERVERS" ]; then
+  echo "ERROR: Could not fetch server list from registry"
+  exit 1
+fi
+
 SERVER_COUNT=$(echo "$SERVERS" | wc -l)
 echo "Found $SERVER_COUNT servers to test"
 echo ""
 
 # Test each server
-while IFS=' ' read -r name url; do
+while IFS='\t' read -r name url; do
   [ -z "$name" ] && continue
   [ -z "$url" ] && continue
 

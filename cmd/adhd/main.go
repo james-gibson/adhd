@@ -203,7 +203,7 @@ func main() {
 			for i, c := range clusters {
 				initialNames[i] = c.Name
 			}
-			registryURL := fmt.Sprintf("http://127.0.0.1:%d/cluster", demo.DiscoveryPort)
+			registryURL := fmt.Sprintf("http://localhost:%d/cluster", demo.DiscoveryPort)
 			d.SetRegistryURL(registryURL, initialNames)
 			}
 

@@ -20,7 +20,7 @@ import (
 // TestAgentSkillToolChain simulates a simple agent skill that chains tool calls
 func TestAgentSkillToolChain(t *testing.T) {
 	// Setup MCP server
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 	addr := listener.Addr().String()
 	_ = listener.Close()
 
@@ -94,7 +94,7 @@ func TestAgentSkillToolChain(t *testing.T) {
 // TestConcurrentAgentSkills simulates multiple agent skills running in parallel
 func TestConcurrentAgentSkills(t *testing.T) {
 	// Setup MCP server
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 	addr := listener.Addr().String()
 	_ = listener.Close()
 
@@ -216,7 +216,7 @@ func TestAgentSkillWithRetry(t *testing.T) {
 	server := http.NewServeMux()
 	server.Handle("/", mockServer)
 	httpServer := &http.Server{Handler: server}
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 
 	go func() {
 		if err := httpServer.Serve(listener); err != nil {
@@ -283,7 +283,7 @@ func TestAgentSkillErrorPropagation(t *testing.T) {
 	server := http.NewServeMux()
 	server.Handle("/", mockServer)
 	httpServer := &http.Server{Handler: server}
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 	go func() { _ = httpServer.Serve(listener) }()
 	defer func() { _ = listener.Close() }()
 
@@ -357,7 +357,7 @@ func TestAgentSkillConcurrentModification(t *testing.T) {
 	server := http.NewServeMux()
 	server.Handle("/", mockServer)
 	httpServer := &http.Server{Handler: server}
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 	go func() { _ = httpServer.Serve(listener) }()
 	defer func() { _ = listener.Close() }()
 

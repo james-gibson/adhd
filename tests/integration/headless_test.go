@@ -334,7 +334,7 @@ func TestHeadlessIsotopeRungIsServerAssigned(t *testing.T) {
 		context.Background(),
 		smokeAlarm.URL,
 		headless.RolePrime,
-		"127.0.0.1:0",
+		"localhost:0",
 	)
 	if err != nil {
 		t.Fatalf("registration failed: %v", err)
@@ -351,7 +351,7 @@ func TestHeadlessMCPClientCanProbe(t *testing.T) {
 	cfg := &config.Config{
 		MCPServer: config.MCPServerConfig{
 			Enabled: true,
-			Addr:    "127.0.0.1:0", // Loopback with random port
+			Addr:    "localhost:0", // Loopback with random port
 		},
 	}
 
@@ -445,7 +445,7 @@ func TestHeadlessPushToUnreachablePrimeFails(t *testing.T) {
 	}
 
 	server := headless.New(cfg)
-	server.SetupMessageQueue(true, "http://127.0.0.1:1/unreachable", 100)
+	server.SetupMessageQueue(true, "http://localhost:1/unreachable", 100)
 
 	if err := server.Start(""); err != nil {
 		t.Fatalf("failed to start headless server: %v", err)

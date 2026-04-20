@@ -210,7 +210,7 @@ func TestNetworkFlowWithMCPServer(t *testing.T) {
 	})
 
 	// Step 3: Start ADHD's MCP server
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 	addr := listener.Addr().String()
 	_ = listener.Close()
 
@@ -279,7 +279,7 @@ func TestNetworkFlowStatusPropagation(t *testing.T) {
 	watcher.Start(ctx, updates)
 
 	// Start MCP server
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, _ := net.Listen("tcp", "localhost:0")
 	mcpAddr := listener.Addr().String()
 	_ = listener.Close()
 

@@ -14,7 +14,7 @@ import (
 )
 
 // startHeadlessOnFreeAddr creates and starts a headless server on a free port.
-// Returns the server and the actual bound addr (e.g. "127.0.0.1:PORT").
+// Returns the server and the actual bound addr (e.g. "localhost:PORT").
 func startHeadlessOnFreeAddr(t *testing.T, logPath string) (*headless.Server, string) {
 	t.Helper()
 	addr := FreeAddr(t)
@@ -37,7 +37,7 @@ func startHeadlessOnFreeAddr(t *testing.T, logPath string) (*headless.Server, st
 // mcpEndpoint builds the full MCP HTTP endpoint URL from a bound addr.
 func mcpEndpoint(addr string) string {
 	if strings.HasPrefix(addr, ":") {
-		return "http://127.0.0.1" + addr + "/mcp"
+		return "http://localhost" + addr + "/mcp"
 	}
 	return "http://" + addr + "/mcp"
 }

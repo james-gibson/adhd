@@ -1,8 +1,9 @@
 #!/bin/bash
 # Test real MCP servers from the official registry
 # Discovers what actually implements MCP vs what doesn't
-
 REGISTRY_URL="https://registry.modelcontextprotocol.io/v0.1/servers"
+
+REGISTRY_URL3="https://remote-mcp-servers.com/api/v0/servers"
 CERTIFIED=0
 FAILED=0
 PENDING=0
@@ -13,12 +14,23 @@ echo "=========================================="
 echo ""
 echo "Registry: $REGISTRY_URL"
 echo ""
+echo " $(curl -s '$REGISTRY_URL') "
+echo ""
 
 # Fetch server list
 echo "Fetching server list from registry..."
-SERVERS=$(curl -s "$REGISTRY_URL" | jq -r '.servers[] | select(.server.remotes != null) | .server | "\(.name) \(.remotes[0].url)"' | sort -u)
-SERVERS="temp https://api.pricepertoken.com/mcp/mcp \n ${SERVERS}" 
 
+SERVERS=$(curl "https://remote-mcp-servers.com/api/v0/servers?limit=100" | jq -r '
+  .servers[] |
+  if .server then
+    select(.server.remotes != null) | [.server.name, (.server.remotes[].url)]
+  else
+    select(.remotes != null) | [.name, (.remotes[].url)]
+  end | @tsv
+' | sort -u)
+#SERVERS="$(curl "https://remote-mcp-servers.com/api/v0/servers?limit=80" | jq -r '.servers[] | select(.server.remotes != null) | "\(.name) \(.remotes[0].url)"' | sort -u)"
+#SERVERS="temp https://api.pricepertoken.com/mcp/mcp \n ${SERVERS}" 
+SERVERS+=$(curl -s "$REGISTRY_URL" | jq -r '.servers[] | select(.server.remotes != null) | .server | "\(.name) \(.remotes[0].url)"' | sort -u)
 if [ -z "$SERVERS" ]; then
   echo "ERROR: Could not fetch server list from registry"
   exit 1
@@ -34,11 +46,14 @@ echo "=========================================="
 echo ""
 
 # Test each server with a public endpoint
-while IFS=' ' read -r name url; do
+while IFS='\t' read -r name url; do
   [ -z "$name" ] && continue
   [ -z "$url" ] && continue
 
-  echo -n "Testing $name ... "
+  if ["$name" = "com.postman/postman-mcp-server"]; then
+    continue
+  fi
+  echo -n "Testing $name ... $url "
 
   # Check if endpoint is reachable and responds to MCP
   STATUS=$(curl -s -X POST "$url" \

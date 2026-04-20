@@ -211,7 +211,7 @@ func TestProbeHTTPError(t *testing.T) {
 
 // TestProbeUnreachableEndpoint verifies handling of unreachable endpoints
 func TestProbeUnreachableEndpoint(t *testing.T) {
-	client := NewHTTPClient("http://127.0.0.1:1", 500*time.Millisecond)
+	client := NewHTTPClient("http://localhost:1", 500*time.Millisecond)
 	result, err := client.Probe(context.Background())
 
 	if err != nil {
@@ -455,7 +455,7 @@ func TestProbeMultipleTools(t *testing.T) {
 // TestProbeWithoutResponse verifies handling of servers that don't respond
 func TestProbeWithoutResponse(t *testing.T) {
 	// Create a listener but never accept connections
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
 	}

@@ -12,7 +12,7 @@ health:
   # Optional: Compare local probes against a remote smoke-alarm instance
   # If not set, lights show only local health (green/red)
   # If set, lights show consensus (green/red/yellow for mismatch)
-  remote_smoke_alarm: "http://smoke-alarm:8080"
+  remote_smoke_alarm: "http://_smoke-alarm._tcp"
 
 # Binary Endpoints: Services to monitor
 # Each binary declares which Gherkin features it satisfies
@@ -21,22 +21,8 @@ health:
 # Note: Relative paths are resolved relative to this config file's directory
 features:
   binaries:
-    # Example 1: Service with explicit feature list
-    - name: api-service
-      endpoint: "http://localhost:9001"
-      features:
-        - name: "authentication"
-          gherkin_file: "features/api-service.feature"
-          gherkin_feature: "Feature: API Authentication"
-        - name: "rate-limiting"
-          gherkin_file: "features/api-service.feature"
-          gherkin_feature: "Feature: Rate Limiting"
-      interval: 5s
-      timeout: 2s
-
-    # Example 2: Smoke-alarm with pickled-onions features (glob pattern loads all .feature files)
     - name: smoke-alarm
-      endpoint: "http://smoke-alarm:8080"
+      endpoint: "http://192.168.1.213:52652/status"
       gherkin_files:
         - ../pickled-onions/features/ocd-smoke-alarm/*.feature
       interval: 10s
@@ -44,8 +30,9 @@ features:
 
     # Example 3: Fire-marshal with pickled-onions features
     - name: fire-marshal
-      endpoint: "http://fire-marshal:9091"
+      endpoint: "http://192.168.1.213:52651/status"
       gherkin_files:
+        - ../pickled-onions/features/ocd-smoke-alarm/*.feature
         - ../pickled-onions/features/fire-marshal/*.feature
       interval: 30s
       timeout: 5s

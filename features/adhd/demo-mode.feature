@@ -1,6 +1,4 @@
-@adhd
-@z0-physical
-@domain-demo
+@adhd @z0-physical @domain-demo
 Feature: ADHD Demo Mode Cluster Discovery
   adhd --demo discovers a running lezz demo cluster and builds its config
   from the cluster registry without requiring a hand-written config file.
@@ -10,11 +8,10 @@ Feature: ADHD Demo Mode Cluster Discovery
 
   Background:
     Given lezz demo is running on the local machine
-
   # ── cluster discovery ────────────────────────────────────────────────────────
 
   Scenario: adhd discovers a cluster via the localhost HTTP registry
-    Given the lezz demo registry is reachable at http://127.0.0.1:19100/cluster
+    Given the lezz demo registry is reachable at http://localhost:19100/cluster
     And the registry contains one cluster with alarm_a and alarm_b URLs
     When adhd starts with --demo
     Then adhd builds a config with two smoke_alarm endpoints
@@ -39,12 +36,10 @@ Feature: ADHD Demo Mode Cluster Discovery
     When adhd starts with --demo
     Then adhd prints "demo discovery failed: no lezz demo found on the LAN within 10s"
     And exits with a non-zero status
-
   # ── config construction ───────────────────────────────────────────────────────
 
   Scenario: cluster with one entry creates two smoke_alarm endpoints
     Given the cluster registry returns a single cluster "demo-001"
-    With alarm_a "http://192.168.1.10:9001" and alarm_b "http://192.168.1.10:9002"
     When adhd builds the config via ConfigFromClusters
     Then the config has exactly two smoke_alarm entries
     And the first entry has name "alarm-a" and endpoint "http://192.168.1.10:9001"
@@ -55,7 +50,6 @@ Feature: ADHD Demo Mode Cluster Discovery
     When adhd builds the config via ConfigFromClusters
     Then smoke_alarm entry names are prefixed with their cluster name
     And the names follow the pattern "<cluster-name>/alarm-a" and "<cluster-name>/alarm-b"
-
   # ── feature discovery in demo mode ───────────────────────────────────────────
   # Features are always loaded from the local filesystem, not from the remote
   # cluster. This is a deliberate design constraint: each adhd instance serves
@@ -73,7 +67,6 @@ Feature: ADHD Demo Mode Cluster Discovery
     Then zero feature lights are created
     And no error is raised for missing feature paths
     And the dashboard still connects to the smoke_alarm endpoints from the cluster
-
   # ── stable config file ────────────────────────────────────────────────────────
 
   Scenario: lezz demo writes a stable config to ~/.lezz/demo-adhd.yaml
@@ -87,7 +80,6 @@ Feature: ADHD Demo Mode Cluster Discovery
     When lezz demo receives SIGINT
     Then ~/.lezz/demo-adhd.yaml is deleted
     And subsequent "adhd --demo" invocations will not see the old cluster
-
   # ── 42i demo capability certification ────────────────────────────────────
   # @domain-demo feature lights are certified green via two mechanisms:
   #

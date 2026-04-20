@@ -18,7 +18,7 @@ import (
 // This chaos test continuously invokes tools to catch regressions early
 func TestMCPToolsChaos(t *testing.T) {
 	// Get a free port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		t.Fatalf("failed to get free port: %v", err)
 	}
@@ -278,7 +278,7 @@ func extractToolNames(tools []interface{}) []string {
 // TestMCPToolsUnderConcurrentLoad simulates concurrent tool access
 func TestMCPToolsUnderConcurrentLoad(t *testing.T) {
 	// Get a free port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		t.Fatalf("failed to get free port: %v", err)
 	}

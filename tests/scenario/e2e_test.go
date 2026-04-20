@@ -71,7 +71,7 @@ type adhdInstance struct {
 	cancel  context.CancelFunc
 	stdout  *bytes.Buffer
 	stderr  *bytes.Buffer
-	mcpURL  string // "http://127.0.0.1:PORT/mcp"
+	mcpURL  string // "http://localhost:PORT/mcp"
 	logPath string
 }
 
@@ -169,7 +169,7 @@ type smokeEndpointCfg struct {
 	endpoint string
 }
 
-// portOf extracts the port string from "127.0.0.1:PORT".
+// portOf extracts the port string from "localhost:PORT".
 func portOf(addr string) string {
 	for i := len(addr) - 1; i >= 0; i-- {
 		if addr[i] == ':' {
