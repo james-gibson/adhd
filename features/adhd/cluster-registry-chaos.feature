@@ -116,13 +116,13 @@ Feature: Cluster Registry Chaos Resilience
 
   Scenario: registry handles 30 clusters with 90 endpoints at scale
     When continuous health monitoring polls all 90 endpoints every 5 seconds
-    Then registry queries complete in <100ms
+    Then registry queries complete in sub 100ms
     And no endpoints are dropped or skipped
     And memory usage is stable (no leaks)
 
   Scenario: registry lookup by cluster name is fast
     When looking up a specific cluster by name from the registry
-    Then lookup completes in <10ms
+    Then lookup completes in sub 10ms
     And results are consistent with full enumeration
 
   # ── regression detection ──────────────────────────────────────────────────
