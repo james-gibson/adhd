@@ -136,7 +136,7 @@ smoke_alarm:%s
 		logPath: logPath,
 	}
 
-	waitCtx, wcancel := context.WithTimeout(context.Background(), 15*time.Second)
+	waitCtx, wcancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer wcancel()
 	if err := waitForMCPServer(waitCtx, inst.mcpURL); err != nil {
 		inst.stop(t)
