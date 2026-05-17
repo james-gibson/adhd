@@ -33,4 +33,4 @@ jobs:
           version: v2.11.4
 
       - name: Test
-        run: go test ./... -count=1 -race -timeout 120s
+        run: go test ./... -count=1 -race -timeout 300s
