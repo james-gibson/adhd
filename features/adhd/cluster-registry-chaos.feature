@@ -48,7 +48,7 @@ Feature: Cluster Registry Chaos Resilience
     When 30 ADHD instances query the registry simultaneously
     Then all 30 queries complete successfully
     And each receives consistent cluster lists
-    And response time doesn't degrade (still <100ms)
+    And response time doesn't degrade (still sub 100ms)
     And no "thundering herd" slowdown occurs
 
   Scenario: cluster discovery doesn't interfere with health monitoring
