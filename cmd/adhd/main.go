@@ -140,7 +140,7 @@ func main() {
 		// Wire scheduler events to dashboard
 		go func() {
 			for event := range scheduler.EventsChannel() {
-				slog.Debug(dashboard.SmokeTestEventMsg{Event: event})
+				slog.Debug(event.Message)
 			}
 		}()
 			// Setup message queue for prime-plus topology if configured
