@@ -90,6 +90,39 @@ func main() {
 		slog.Info("network integration enabled", "endpoints", len(cfg.SmokeAlarm), "mcp_server", cfg.MCPServer.Enabled)
 	}
 
+			
+
+		// Initialize scheduler if certified endpoints are configured
+		// if len(cfg.CertifiedEndpoints) > 0 {
+	proxyExecutor := proxy.NewExecutor()
+	runner := smoketest.NewRunner(proxyExecutor)
+	scheduler := smoketest.NewScheduler(runner)
+
+	// Register endpoints from config
+	for _, ep := range cfg.CertifiedEndpoints {
+		// Get token from environment variable
+		token := os.Getenv(ep.TokenEnv)
+		if token == "" && ep.AuthType != "none" {
+			slog.Warn("certified endpoint token not found", "endpoint_id", ep.ID, "token_env", ep.TokenEnv)
+			continue
+		}
+
+		certEndpoint := &smoketest.CertifiedEndpoint{
+			ID:       ep.ID,
+			URL:      ep.URL,
+			AuthType: ep.AuthType,
+			Token:    token,
+			Header:   ep.Header,
+			TestFreq: ep.TestFreq,
+			CertLevel: 100,
+		}
+		scheduler.RegisterEndpoint(certEndpoint)
+		slog.Info("registered certified endpoint", "id", ep.ID, "url", ep.URL, "auth_type", ep.AuthType)
+	// }
+
+	// Start scheduler
+	scheduler.Start(ctx)
+
 	// Run in headless or TUI mode
 	if *headlessFlag {
 		// Headless mode: MCP traffic logging + isotope registration
@@ -104,7 +137,12 @@ func main() {
 			slog.Warn("headless server start warning", "error", err)
 			// Continue even if server startup fails - still log traffic
 			}
-
+		// Wire scheduler events to dashboard
+		go func() {
+			for event := range scheduler.EventsChannel() {
+				slog.Debug(dashboard.SmokeTestEventMsg{Event: event})
+			}
+		}()
 			// Setup message queue for prime-plus topology if configured
 		if *primePlusFlag {
 			primeAddr := *primeAddrFlag
@@ -144,38 +182,7 @@ func main() {
 			}
 	} else {
 		// TUI mode: Bubble Tea dashboard
-		d := dashboard.NewBubbleTeaDashboard(cfg)
-
-		// Initialize scheduler if certified endpoints are configured
-		if len(cfg.CertifiedEndpoints) > 0 {
-			proxyExecutor := proxy.NewExecutor()
-			runner := smoketest.NewRunner(proxyExecutor)
-			scheduler := smoketest.NewScheduler(runner)
-
-			// Register endpoints from config
-			for _, ep := range cfg.CertifiedEndpoints {
-				// Get token from environment variable
-				token := os.Getenv(ep.TokenEnv)
-				if token == "" && ep.AuthType != "none" {
-					slog.Warn("certified endpoint token not found", "endpoint_id", ep.ID, "token_env", ep.TokenEnv)
-					continue
-				}
-
-				certEndpoint := &smoketest.CertifiedEndpoint{
-					ID:       ep.ID,
-					URL:      ep.URL,
-					AuthType: ep.AuthType,
-					Token:    token,
-					Header:   ep.Header,
-					TestFreq: ep.TestFreq,
-					CertLevel: 100,
-				}
-				scheduler.RegisterEndpoint(certEndpoint)
-				slog.Info("registered certified endpoint", "id", ep.ID, "url", ep.URL, "auth_type", ep.AuthType)
-			}
-
-			// Start scheduler
-			scheduler.Start(ctx)
+			d := dashboard.NewBubbleTeaDashboard(cfg)
 			d.SetScheduler(scheduler)
 
 
