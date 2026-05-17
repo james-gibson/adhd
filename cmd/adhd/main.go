@@ -194,7 +194,7 @@ func main() {
 			}()
 
 			slog.Info("smoke test scheduler started", "endpoints", len(cfg.CertifiedEndpoints))
-			}
+			
 
 		// If the config was built from a lezz demo cluster discovery, mark the
 		// @domain-demo feature lights pre-verified so they go green at Init time,
@@ -217,6 +217,7 @@ func main() {
 		if err := d.Run(); err != nil {
 			slog.Error("dashboard error", "error", err)
 			}
+		}
 	}
 }
 
