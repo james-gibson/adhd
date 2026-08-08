@@ -318,6 +318,9 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 	case "adhd.path.list":
 		result, respErr = s.handlePathList(req.Params)
 
+	case "adhd.proxy":
+		result, respErr = s.handleProxyCall(r.Context(), req.Params)
+
 	default:
 		// Check runtime-registered per-repo and per-project tools.
 		s.mu.RLock()
@@ -755,7 +758,11 @@ func (s *Server) handleToolsCall(ctx context.Context, params interface{}) (inter
 		return nil, &jsonrpcError{Code: -32602, Message: "name is required and must be a string"}
 	}
 
-	toolInput := paramsMap["input"]
+	toolInput := paramsMap["arguments"]
+	if toolInput == nil {
+		// Fall back to the legacy "input" key for backward compatibility.
+		toolInput = paramsMap["input"]
+	}
 	if toolInput == nil {
 		toolInput = map[string]interface{}{}
 	}
@@ -2064,35 +2071,32 @@ func (s *Server) handleProxyCall(ctx context.Context, params interface{}) (inter
 		return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
 	}
 
-	// Parse the proxy request
-	var proxyReq proxy.ProxyRequest
+	// Normalize a string-encoded nested "call" object back into a map so both
+	// direct-method and tools/call transports accept it.
+	if callStr, isStr := paramsMap["call"].(string); isStr && callStr != "" {
+		var callObj map[string]interface{}
+		if err := json.Unmarshal([]byte(callStr), &callObj); err == nil {
+			paramsMap["call"] = callObj
+		}
+	}
 
-	// Extract target_endpoint
-	if endpoint, ok := paramsMap["target_endpoint"].(string); ok {
-		proxyReq.TargetEndpoint = endpoint
-	} else {
+	// Round-trip through the typed struct so field extraction is unambiguous
+	// and forward-compatible (unlike the bare-map assertions that failed for
+	// nested call objects via tools/call).
+	raw, err := json.Marshal(paramsMap)
+	if err != nil {
+		return nil, &jsonrpcError{Code: -32602, Message: "invalid proxy params: " + err.Error()}
+	}
+
+	var proxyReq proxy.ProxyRequest
+	if err := json.Unmarshal(raw, &proxyReq); err != nil {
+		return nil, &jsonrpcError{Code: -32602, Message: "invalid proxy params: " + err.Error()}
+	}
+
+	if proxyReq.TargetEndpoint == "" {
 		return nil, &jsonrpcError{Code: -32602, Message: "target_endpoint is required and must be a string"}
 	}
-
-	// Extract auth config if provided
-	if authObj, ok := paramsMap["auth"].(map[string]interface{}); ok {
-		authCfg := &proxy.AuthConfig{}
-		if authType, ok := authObj["type"].(string); ok {
-			authCfg.Type = authType
-		}
-		if token, ok := authObj["token"].(string); ok {
-			authCfg.Token = token
-		}
-		if header, ok := authObj["header"].(string); ok {
-			authCfg.Header = header
-		}
-		proxyReq.Auth = authCfg
-	}
-
-	// Extract the MCP call to forward
-	if call, ok := paramsMap["call"].(map[string]interface{}); ok {
-		proxyReq.Call = call
-	} else {
+	if len(proxyReq.Call) == 0 {
 		return nil, &jsonrpcError{Code: -32602, Message: "call is required and must be an object"}
 	}
 
