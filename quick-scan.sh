@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-MCP_URL="http://localhost:60502/mcp"
+MCP_URL="http://localhost:1111/mcp"
 CLUSTER_URL="http://localhost:19100/cluster"
 REFRESH_INTERVAL=15
 CURL_TIMEOUT=3
@@ -16,12 +16,29 @@ CYAN='\033[36m'
 MAGENTA='\033[35m'
 RESET='\033[0m'
 
-PRIME_URL="http://localhost:60065/mcp"
-PRIME_ISOTOPE=""
+PRIME_URL="http://192.168.7.205:50970/mcp"
+PRIME_ISOTOPE="YufFzoru7n2xGbbKyKxAY6YM-99ugXQUCs8kLI9gzzw"
 declare -A KNOWN_ENDPOINTS
 declare -A PROPAGATION_RESULTS
 RUNG_PROGRESS_TOKEN=0
 PROPAGATION_RESULTS=()
+
+# After curl, check for errors BEFORE writing
+check_resp() {
+    local resp="$1"
+    local tmpfile="$2"
+    # Fail fast if error
+    if [ -z "$resp" ]; then
+        echo '{"error":{"message":"empty response"}}' > "$tmpfile"
+        return 1
+    fi
+    if echo "$resp" | jq -e '.error' >/dev/null 2>&1; then
+        echo "$resp" > "$tmpfile"  # write error response
+        return 1
+    fi
+    echo "$resp" > "$tmpfile"
+    return 0
+}
 
 status_icon() {
   case "$1" in
@@ -50,14 +67,14 @@ depth_label() {
 rewrite_endpoint() {
   local endpoint="$1"
   if [[ "$MCP_URL" =~ localhost|127\.0\.0\.1 ]]; then
-    echo "$endpoint" | sed -E 's|^(https?://)([^:/]+)(.*)|http://localhost\3|'
+    echo "$endpoint" | sed -E 's|^(https?://)([^:/]+)(.*)|http://0.0.0.0\3|'
   else
     echo "$endpoint"
   fi
 }
 
 ms_now() {
-  echo $(date +%s%3N)
+  echo $(date +%s)
 }
 
 mcp_post() {
@@ -123,11 +140,17 @@ probe_all_nodes() {
     (
       local t0 t1
       t0=$(date +%s)
-      resp=$(mcp_post "$url" "adhd.isotope.status" 6)
+
+      (
+        resp=$(mcp_post "$url" "adhd.isotope.status" 6)
+        check_resp "$resp" "$tmpdir/${safe_name}.isotope" || true
+      ) &
+      wait $!
       t1=$(date +%s)
-      echo "$resp" > "$tmpdir/${safe_name}.isotope"
       echo $((t1 - t0)) > "$tmpdir/${safe_name}.latency"
       mcp_post "$url" "adhd.isotope.instance" 1 > "$tmpdir/${safe_name}.instance"
+
+
     ) &
     pids+=($!)
   done
@@ -145,6 +168,9 @@ relocate_prime() {
     local instance_file="$tmpdir/${safe_name}.instance"
     [ -f "$instance_file" ] || continue
     local id
+    if ! jq -e '.result' "$instance_file" >/dev/null 2>&1; then
+        role="error"
+    fi
     id=$(jq -r '.result.isotope // empty' "$instance_file" 2>/dev/null)
     if [ "$id" = "$PRIME_ISOTOPE" ]; then
       if [ "$url" != "$PRIME_URL" ]; then
@@ -180,6 +206,9 @@ run_propagation_test() {
   local reg_resp
   reg_resp=$(rung_respond "$PRIME_URL" "$nonce" "$token")
   local prime_echo
+  if ! jq -e '.result' "$isotope_resp" >/dev/null 2>&1; then
+      role="error"
+  fi
   prime_echo=$(echo "$reg_resp" | jq -r '.result.nonce // .result // empty' 2>/dev/null)
   echo -e "response: ${reg_resp} | echo ${prime_echo}"
   if [ -z "$reg_resp" ] || echo "$reg_resp" | jq -e '.error' > /dev/null 2>&1; then
@@ -230,18 +259,21 @@ run_propagation_test() {
       elif echo "$resp" | jq -e '.error' > /dev/null 2>&1; then
         local reason
         reason=$(echo "$resp" | jq -r '.error.message // "error"')
-        echo "error|$reason" > "$tmpdir/${safe_name}.propagation"
+        echo "error|$reason" >> "$tmpdir/${safe_name}.propagation"
       else
         # Extract the response text — adjust path if the API shape differs
         local echo_val
         echo -e "$resp"
+        if ! jq -e '.result' "$isotope_resp" >/dev/null 2>&1; then
+            role="error"
+        fi
         echo_val=$(echo "$resp" | jq -r '.result.content[0].text // .result // empty' 2>/dev/null)
         # Check if the nonce appears in the response (propagation confirmed)
         if echo "$echo_val" | grep -q "$nonce" 2>/dev/null || \
            echo "$resp" | jq -e '.result' > /dev/null 2>&1; then
-          echo "propagated|${latency}ms|$echo_val" > "$tmpdir/${safe_name}.propagation"
+          echo "propagated|${latency}ms|$echo_val" >> "$tmpdir/${safe_name}.propagation"
         else
-          echo "no-echo|${latency}ms|$echo_val" > "$tmpdir/${safe_name}.propagation"
+          echo "no-echo|${latency}ms|$echo_val" >> "$tmpdir/${safe_name}.propagation"
         fi
       fi
     ) &
@@ -268,6 +300,9 @@ bootstrap() {
     return 1
   fi
   echo -e "${DIM}Found ${#KNOWN_ENDPOINTS[@]} nodes. Resolving prime isotope...${RESET}"
+  if ! jq -e '.result' "$isotope_resp" >/dev/null 2>&1; then
+      role="error"
+  fi
   PRIME_ISOTOPE=$(mcp_post "$PRIME_URL" "adhd.isotope.instance" 1 | jq -r '.result.isotope // empty')
   if [ -z "$PRIME_ISOTOPE" ]; then
     echo -e "${RED}✘ Could not reach $PRIME_URL${RESET}"
@@ -324,7 +359,9 @@ scan() {
     [ -n "$PRIME_RELOCATED" ] && relocated_note="  ${YELLOW}⚡ relocated → $PRIME_RELOCATED${RESET}"
     echo -e "${MAGENTA}${BOLD}◆ PRIME — $PRIME_URL${RESET}$relocated_note"
     echo -e "${DIM}────────────────────────────────────────${RESET}"
-
+    if ! jq -e '.result' "$status_resp" >/dev/null 2>&1; then
+        role="error"
+    fi
     if [ -n "$status_resp" ] && ! echo "$status_resp" | jq -e '.error' > /dev/null 2>&1; then
       local instance green red yellow dark total peers_list
       instance=$(echo "$status_resp"   | jq -r '.result.instance')
@@ -342,6 +379,11 @@ scan() {
 
     if [ -n "$isotope_resp" ] && ! echo "$isotope_resp" | jq -e '.error' > /dev/null 2>&1; then
       local role istatus
+      if ! jq -e '.result' "$isotope_resp" >/dev/null 2>&1; then
+          role="error"
+          echo -e "  Role     : $role   Status: ${RED}Something broke!${RESET}"
+          return;
+      fi
       role=$(echo "$isotope_resp"    | jq -r '.result.role')
       istatus=$(echo "$isotope_resp" | jq -r '.result.status')
       echo -e "  Role     : $role   Status: ${GREEN}$istatus${RESET}"
@@ -357,6 +399,9 @@ scan() {
      ! echo "$lights_resp" | jq -e '.error' > /dev/null 2>&1; then
     while IFS=$'\t' read -r lstatus lname details; do
       local depth rank
+      if ! jq -e '.result' "$lights_resp" >/dev/null 2>&1; then
+          continue;
+      fi
       depth=$(light_depth "$lname")
       rank=$(case "$lstatus" in red) echo 0;; yellow) echo 1;; green) echo 2;; *) echo 3;; esac)
       echo "${rank}|${depth}|${lstatus}|${lname}|${details}"
@@ -475,6 +520,9 @@ scan() {
       echo -e "  ${RED}●${RESET} ${BOLD}$name${RESET}$prime_marker  ${RED}✘ unreachable${RESET}$latency  ${DIM}$url${RESET}"
     else
       local role istatus
+      if ! jq -e '.result' "$isotope_file" >/dev/null 2>&1; then
+          role="error"
+      fi
       role=$(jq -r '.result.role'      "$isotope_file")
       istatus=$(jq -r '.result.status' "$isotope_file")
       echo -e "  ${GREEN}●${RESET} ${BOLD}$name${RESET}$prime_marker  $role  ${GREEN}$istatus${RESET}$latency  ${DIM}$url${RESET}"
