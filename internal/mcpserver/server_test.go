@@ -703,3 +703,120 @@ func TestRungValidationRespondAndVerify(t *testing.T) {
 		t.Error("expected valid=false for replayed receipt with different nonce")
 	}
 }
+
+// TestHandleClusterJoinLeezzWireContract verifies that adhd.cluster.join
+// accepts the canonical underscore-keyed payload that lezz demo actually sends
+// (alarm_a, alarm_b, adhd_mcp, github_repos, projects) and that the peer,
+// project proxy tool, and repo tool are all registered.
+func TestHandleClusterJoinLeezzWireContract(t *testing.T) {
+	cluster := lights.NewCluster()
+	s := NewServer(config.MCPServerConfig{Enabled: true, Addr: "127.0.0.1:0"}, cluster)
+
+	var joinedName, joinedAlarmA, joinedAlarmB string
+	s.SetClusterJoinHandler(func(name, alarmA, alarmB string) error {
+		joinedName, joinedAlarmA, joinedAlarmB = name, alarmA, alarmB
+		return nil
+	})
+
+	params := map[string]interface{}{
+		"name":     "demo-1234",
+		"alarm_a":  "http://10.0.0.5:18080",
+		"alarm_b":  "http://10.0.0.6:18081",
+		"adhd_mcp": "http://10.0.0.5:19090/mcp",
+		"github_repos": []interface{}{
+			"james-gibson/tuner",
+		},
+		"projects": []interface{}{
+			map[string]interface{}{
+				"name":    "machinewitness",
+				"repo":    "martinschenk/machinewitness-mcp",
+				"mcp_url": "https://machinewitness.eu/mcp",
+			},
+		},
+	}
+
+	result, jrpcErr := s.handleClusterJoin(params)
+	if jrpcErr != nil {
+		t.Fatalf("handleClusterJoin returned error: %+v", jrpcErr)
+	}
+
+	if joinedName != "demo-1234" || joinedAlarmA != "http://10.0.0.5:18080" || joinedAlarmB != "http://10.0.0.6:18081" {
+		t.Errorf("handler got name=%q alarmA=%q alarmB=%q", joinedName, joinedAlarmA, joinedAlarmB)
+	}
+
+	s.mu.RLock()
+	peer, peerOK := s.clusterPeers["demo-1234"]
+	var projectTool, repoTool *dynamicTool
+	for _, dt := range s.dynamicTools {
+		switch dt.name {
+		case "adhd.project.machinewitness.call":
+			projectTool = dt
+		case "adhd.dependabot.james-gibson.tuner":
+			repoTool = dt
+		}
+	}
+	s.mu.RUnlock()
+
+	if !peerOK {
+		t.Fatal("cluster peer demo-1234 not registered")
+	}
+	if peer.Endpoint != "http://10.0.0.5:19090/mcp" {
+		t.Errorf("peer endpoint = %q", peer.Endpoint)
+	}
+	if projectTool == nil {
+		t.Error("adhd.project.machinewitness.call proxy tool not registered")
+	}
+	if repoTool == nil {
+		t.Error("adhd.dependabot.james-gibson.tuner repo tool not registered")
+	}
+
+	resMap, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("result not a map: %T", result)
+	}
+	if got, ok := resMap["repos_registered"].(int); !ok || got != 1 {
+		t.Errorf("repos_registered = %v, want 1", resMap["repos_registered"])
+	}
+	if got, ok := resMap["projects_registered"].(int); !ok || got != 1 {
+		t.Errorf("projects_registered = %v, want 1", resMap["projects_registered"])
+	}
+}
+
+// TestHandleClusterJoinLegacyDottedKeys verifies back-compatibility: payloads
+// following the earlier dotted tool schema (alarm-a, adhd.mcp, github.repos)
+// still resolve, so existing manual callers keep working.
+func TestHandleClusterJoinLegacyDottedKeys(t *testing.T) {
+	cluster := lights.NewCluster()
+	s := NewServer(config.MCPServerConfig{Enabled: true, Addr: "127.0.0.1:0"}, cluster)
+
+	var joinedAlarmA, joinedAlarmB string
+	s.SetClusterJoinHandler(func(name, alarmA, alarmB string) error {
+		joinedAlarmA, joinedAlarmB = alarmA, alarmB
+		return nil
+	})
+
+	params := map[string]interface{}{
+		"name":     "legacy-cluster",
+		"alarm-a":  "http://10.0.0.7:18080",
+		"alarm-b":  "http://10.0.0.8:18081",
+		"adhd.mcp": "http://10.0.0.7:19090/mcp",
+	}
+
+	if _, jrpcErr := s.handleClusterJoin(params); jrpcErr != nil {
+		t.Fatalf("handleClusterJoin with dotted keys returned error: %+v", jrpcErr)
+	}
+
+	if joinedAlarmA != "http://10.0.0.7:18080" || joinedAlarmB != "http://10.0.0.8:18081" {
+		t.Errorf("handler got alarmA=%q alarmB=%q", joinedAlarmA, joinedAlarmB)
+	}
+
+	s.mu.RLock()
+	peer, ok := s.clusterPeers["legacy-cluster"]
+	s.mu.RUnlock()
+	if !ok {
+		t.Fatal("cluster peer legacy-cluster not registered")
+	}
+	if peer.Endpoint != "http://10.0.0.7:19090/mcp" {
+		t.Errorf("peer endpoint = %q", peer.Endpoint)
+	}
+}

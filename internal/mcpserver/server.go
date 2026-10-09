@@ -539,22 +539,34 @@ func (s *Server) handleToolsList() interface{} {
 						"type":        "string",
 						"description": "Cluster name",
 					},
-					"alarm-a": map[string]interface{}{
+					"alarm_a": map[string]interface{}{
 						"type":        "string",
 						"description": "HTTP URL of the cluster primary smoke-alarm",
 					},
-					"alarm-b": map[string]interface{}{
+					"alarm_b": map[string]interface{}{
 						"type":        "string",
 						"description": "HTTP URL of the cluster secondary smoke-alarm",
 					},
-					"adhd.mcp": map[string]interface{}{
+					"adhd_mcp": map[string]interface{}{
 						"type":        "string",
 						"description": "HTTP URL of the cluster's own ADHD MCP server",
 					},
-					"github.repos": map[string]interface{}{
+					"github_repos": map[string]interface{}{
 						"type":        "array",
 						"description": "GitHub repo slugs owned by this cluster",
 						"items":       map[string]interface{}{"type": "string"},
+					},
+					"projects": map[string]interface{}{
+						"type":        "array",
+						"description": "Projects exposing an MCP server; each registers an adhd.project.<name>.call proxy tool",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"name":    map[string]interface{}{"type": "string"},
+								"repo":    map[string]interface{}{"type": "string"},
+								"mcp_url": map[string]interface{}{"type": "string"},
+							},
+						},
 					},
 					"honeypot-tools": map[string]interface{}{
 						"type":        "array",
@@ -1115,6 +1127,20 @@ func (s *Server) handleRungChallenge(ctx context.Context, params interface{}) (i
 	}, nil
 }
 
+// firstString returns the first non-empty string found under the given keys.
+// The canonical underscore keys (alarm_a, adhd_mcp, github_repos) are tried
+// first, matching the wire contract shared with lezz demo; legacy dotted keys
+// (alarm-a, adhd.mcp) still resolve for callers that followed the earlier
+// tool schema.
+func firstString(m map[string]interface{}, keys ...string) string {
+	for _, k := range keys {
+		if s, ok := m[k].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 // handleClusterJoin wires a newly-joined lezz demo cluster into the running watcher.
 func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcError) {
 	p, err := parseStringParams(params, "name")
@@ -1123,8 +1149,8 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 	}
 	// alarm-a and alarm-b are optional — extract without requiring them.
 	m, _ := params.(map[string]interface{})
-	alarmA, _ := m["alarm-a"].(string)
-	alarmB, _ := m["alarm-b"].(string)
+	alarmA := firstString(m, "alarm_a", "alarm-a")
+	alarmB := firstString(m, "alarm_b", "alarm-b")
 
 	if s.clusterJoinHandler == nil {
 		return map[string]interface{}{"accepted": false, "reason": "not configured"}, nil
@@ -1135,7 +1161,11 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 
 	// Register per-repo Dependabot tools for any GitHub repos in this cluster.
 	var repoCount int
-	if reposRaw, ok := m["github.repos"]; ok {
+	reposRaw, reposOK := m["github_repos"]
+	if !reposOK {
+		reposRaw, reposOK = m["github.repos"]
+	}
+	if reposOK {
 		if reposSlice, ok := reposRaw.([]interface{}); ok {
 			for _, r := range reposSlice {
 				if slug, ok := r.(string); ok && slug != "" {
@@ -1167,7 +1197,7 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 	}
 
 	// Track this cluster peer for path negotiation.
-	adhdMCP, _ := m["adhd.mcp"].(string)
+	adhdMCP := firstString(m, "adhd_mcp", "adhd.mcp")
 	s.mu.Lock()
 	s.clusterPeers[p["name"]] = &clusterPeerInfo{
 		Name:     p["name"],
@@ -1868,10 +1898,10 @@ func (s *Server) resolveTargetViaDiscovery(ctx context.Context, targetIsotope st
 				continue
 			}
 			if name == targetIsotope {
-				endpoint, _ := infoMap["adhd.mcp"].(string)
+				endpoint := firstString(infoMap, "adhd_mcp", "adhd.mcp")
 				return endpoint, name
 			}
-			if endpoint, _ := infoMap["adhd.mcp"].(string); endpoint != "" {
+			if endpoint := firstString(infoMap, "adhd_mcp", "adhd.mcp"); endpoint != "" {
 				if strings.Contains(endpoint, targetIsotope) || strings.Contains(targetIsotope, strings.Split(endpoint, "://")[1]) {
 					return endpoint, name
 				}
