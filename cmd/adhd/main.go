@@ -20,17 +20,17 @@ import (
 )
 
 var (
-	versionFlag   = flag.Bool("v", false, "show version and exit")
-	debugFlag     = flag.Bool("debug", false, "enable debug logging")
-	configFlag    = flag.String("config", "adhd.yaml", "path to config file")
-	headlessFlag  = flag.Bool("headless", false, "run in headless mode (no TUI, JSONL logging)")
-	logFileFlag   = flag.String("log", "", "log file path for JSONL output (stdout if empty)")
-	smokeAlarmURL = flag.String("smoke-alarm", "", "smoke-alarm URL for isotope registration")
-	primePlusFlag = flag.Bool("prime-plus", false, "run as prime-plus: buffer logs and push to prime")
-	primeAddrFlag = flag.String("prime-addr", "", "address of prime smoke-alarm (required if --prime-plus)")
+	versionFlag    = flag.Bool("v", false, "show version and exit")
+	debugFlag      = flag.Bool("debug", false, "enable debug logging")
+	configFlag     = flag.String("config", "adhd.yaml", "path to config file")
+	headlessFlag   = flag.Bool("headless", false, "run in headless mode (no TUI, JSONL logging)")
+	logFileFlag    = flag.String("log", "", "log file path for JSONL output (stdout if empty)")
+	smokeAlarmURL  = flag.String("smoke-alarm", "", "smoke-alarm URL for isotope registration")
+	primePlusFlag  = flag.Bool("prime-plus", false, "run as prime-plus: buffer logs and push to prime")
+	primeAddrFlag  = flag.String("prime-addr", "", "address of prime smoke-alarm (required if --prime-plus)")
 	bufferSizeFlag = flag.Int("buffer-size", 1000, "max number of logs to buffer before pushing to prime")
-	mcpAddrFlag   = flag.String("mcp-addr", "", "override MCP server address (e.g., :0 for random port)")
-	demoFlag      = flag.Bool("demo", false, "discover a lezz demo cluster via mDNS instead of loading config")
+	mcpAddrFlag    = flag.String("mcp-addr", "", "override MCP server address (e.g., :0 for random port)")
+	demoFlag       = flag.Bool("demo", false, "discover a lezz demo cluster via mDNS instead of loading config")
 )
 
 func main() {
@@ -61,7 +61,7 @@ func main() {
 			if err := shutdown(ctx); err != nil {
 				slog.Error("telemetry shutdown failed", "error", err)
 			}
-			}()
+		}()
 	}
 
 	// Load configuration — either from file or by discovering a lezz demo cluster.
@@ -74,7 +74,7 @@ func main() {
 		if discoverErr != nil {
 			fmt.Fprintln(os.Stderr, "demo discovery failed:", discoverErr)
 			os.Exit(1)
-			}
+		}
 		fmt.Fprintf(os.Stderr, "found %d cluster(s)\n", len(clusters))
 		cfg = demo.ConfigFromClusters(clusters)
 	} else {
@@ -83,17 +83,16 @@ func main() {
 		if loadErr != nil {
 			slog.Error("failed to load config", "path", *configFlag, "error", loadErr)
 			os.Exit(1)
-			}
+		}
 	}
 
 	if cfg.IsNetworkingEnabled() {
 		slog.Info("network integration enabled", "endpoints", len(cfg.SmokeAlarm), "mcp_server", cfg.MCPServer.Enabled)
 	}
 
-			
-
-		// Initialize scheduler if certified endpoints are configured
-		// if len(cfg.CertifiedEndpoints) > 0 {
+	// Initialize the smoke-test scheduler. The scheduler is shared by both
+	// headless and TUI modes, so it is created at function scope regardless of
+	// the mode or whether any certified endpoints are configured.
 	proxyExecutor := proxy.NewExecutor()
 	runner := smoketest.NewRunner(proxyExecutor)
 	scheduler := smoketest.NewScheduler(runner)
@@ -108,17 +107,17 @@ func main() {
 		}
 
 		certEndpoint := &smoketest.CertifiedEndpoint{
-			ID:       ep.ID,
-			URL:      ep.URL,
-			AuthType: ep.AuthType,
-			Token:    token,
-			Header:   ep.Header,
-			TestFreq: ep.TestFreq,
+			ID:        ep.ID,
+			URL:       ep.URL,
+			AuthType:  ep.AuthType,
+			Token:     token,
+			Header:    ep.Header,
+			TestFreq:  ep.TestFreq,
 			CertLevel: 100,
 		}
 		scheduler.RegisterEndpoint(certEndpoint)
 		slog.Info("registered certified endpoint", "id", ep.ID, "url", ep.URL, "auth_type", ep.AuthType)
-	// }
+	}
 
 	// Start scheduler
 	scheduler.Start(ctx)
@@ -131,19 +130,19 @@ func main() {
 		// Override MCP address if specified (useful for avoiding port conflicts)
 		if *mcpAddrFlag != "" {
 			cfg.MCPServer.Addr = *mcpAddrFlag
-			}
+		}
 
 		if err := server.Start(*logFileFlag); err != nil {
 			slog.Warn("headless server start warning", "error", err)
 			// Continue even if server startup fails - still log traffic
-			}
+		}
 		// Wire scheduler events to dashboard
 		go func() {
 			for event := range scheduler.EventsChannel() {
 				slog.Debug(event.Message)
 			}
 		}()
-			// Setup message queue for prime-plus topology if configured
+		// Setup message queue for prime-plus topology if configured
 		if *primePlusFlag {
 			primeAddr := *primeAddrFlag
 
@@ -162,14 +161,14 @@ func main() {
 				server.SetupMessageQueue(*primePlusFlag, primeAddr, *bufferSizeFlag)
 				slog.Info("message queue configured for prime-plus", "prime_addr", primeAddr, "buffer_size", *bufferSizeFlag)
 			}
-			}
+		}
 
 		// Register with smoke-alarm if configured
 		if *smokeAlarmURL != "" {
 			if err := server.RegisterAsIsotope(*smokeAlarmURL); err != nil {
 				slog.Warn("failed to register as isotope", "error", err)
 			}
-			}
+		}
 
 		// Keep running indefinitely (respond to signals)
 		slog.Info("adhd running in headless mode", "log_file", *logFileFlag, "prime_plus", *primePlusFlag)
@@ -179,22 +178,20 @@ func main() {
 		slog.Info("shutting down")
 		if err := server.Shutdown(); err != nil {
 			slog.Warn("server shutdown error", "error", err)
-			}
+		}
 	} else {
 		// TUI mode: Bubble Tea dashboard
-			d := dashboard.NewBubbleTeaDashboard(cfg)
-			d.SetScheduler(scheduler)
+		d := dashboard.NewBubbleTeaDashboard(cfg)
+		d.SetScheduler(scheduler)
 
+		// Wire scheduler events to dashboard
+		go func() {
+			for event := range scheduler.EventsChannel() {
+				d.Send(dashboard.SmokeTestEventMsg{Event: event})
+			}
+		}()
 
-			// Wire scheduler events to dashboard
-			go func() {
-				for event := range scheduler.EventsChannel() {
-					d.Send(dashboard.SmokeTestEventMsg{Event: event})
-				}
-			}()
-
-			slog.Info("smoke test scheduler started", "endpoints", len(cfg.CertifiedEndpoints))
-			
+		slog.Info("smoke test scheduler started", "endpoints", len(cfg.CertifiedEndpoints))
 
 		// If the config was built from a lezz demo cluster discovery, mark the
 		// @domain-demo feature lights pre-verified so they go green at Init time,
@@ -212,11 +209,10 @@ func main() {
 			}
 			registryURL := fmt.Sprintf("http://localhost:%d/cluster", demo.DiscoveryPort)
 			d.SetRegistryURL(registryURL, initialNames)
-			}
+		}
 
 		if err := d.Run(); err != nil {
 			slog.Error("dashboard error", "error", err)
-			}
 		}
 	}
 }
@@ -234,7 +230,7 @@ func version() string {
 			if s.Key == "vcs.revision" && len(s.Value) >= 8 {
 				return "adhd " + s.Value[:8]
 			}
-			}
+		}
 		return "adhd dev"
 	}
 
