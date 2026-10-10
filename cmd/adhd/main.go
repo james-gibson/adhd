@@ -33,6 +33,20 @@ var (
 	demoFlag       = flag.Bool("demo", false, "discover a lezz demo cluster via mDNS instead of loading config")
 )
 
+// enableMCPForAddr applies an explicit --mcp-addr override to cfg. Supplying an
+// address is a request to serve MCP there, so it also enables the hosted MCP
+// server even when the config left it disabled. This matters for --demo
+// discovery: demo.ConfigFromClusters returns the default config with
+// mcp_server.enabled=false, so without this the MCP port never opens and lezz
+// auto/demo time out waiting for it.
+func enableMCPForAddr(cfg *config.Config, addr string) {
+	if addr == "" {
+		return
+	}
+	cfg.MCPServer.Enabled = true
+	cfg.MCPServer.Addr = addr
+}
+
 func main() {
 	flag.Parse()
 
@@ -125,12 +139,8 @@ func main() {
 	// Run in headless or TUI mode
 	if *headlessFlag {
 		// Headless mode: MCP traffic logging + isotope registration
+		enableMCPForAddr(cfg, *mcpAddrFlag)
 		server := headless.New(cfg)
-
-		// Override MCP address if specified (useful for avoiding port conflicts)
-		if *mcpAddrFlag != "" {
-			cfg.MCPServer.Addr = *mcpAddrFlag
-		}
 
 		if err := server.Start(*logFileFlag); err != nil {
 			slog.Warn("headless server start warning", "error", err)
