@@ -15,9 +15,10 @@ description: Use when writing, reviewing, extending, or editing Gherkin .feature
 # ADHD Gherkin feature patterns
 
 `features/adhd/*.feature` is the ADHD acceptance suite — it runs with
-`go run ./cmd/adhd test --features=features/adhd/` and doubles as living
-documentation. When you add or extend a feature, match the conventions below so
-it reads like the rest of the suite.
+`go test ./tests/scenario/... -count=1`, which drives a live `adhd` binary and
+matches its JSONL traffic against these features via `internal/report`. It
+doubles as living documentation. When you add or extend a feature, match the
+conventions below so it reads like the rest of the suite.
 
 ## 1. Header: tag block, then `Feature:`
 
@@ -174,7 +175,7 @@ same change that changes the count. A stale count is a false assertion.
 - Blocked work is `@red` with `# BLOCKED` and `# Why this matters`; -42i where
   certification is incomplete.
 - No drifting counts.
-- `go run ./cmd/adhd test --features=features/adhd/` passes.
+- `go test ./tests/scenario/... -count=1` passes.
 
 For the full tag catalog, copy-paste templates (lifecycle, chaos, negative,
 red/green/refactor, JSON-RPC), and a vocabulary glossary, read

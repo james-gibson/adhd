@@ -108,8 +108,9 @@ adhd/
 │   ├── features/          — Gherkin feature discovery
 │   ├── headless/          — MCP server, isotope registration, mDNS
 │   └── telemetry/         — OTEL setup
-├── features/adhd/         — Gherkin acceptance tests
-└── tests/integration/     — Integration tests
+├── features/adhd/         — Gherkin acceptance tests (matched by internal/report)
+├── tests/scenario/        — Scenario E2E tests (live binary → JSONL → feature match)
+└── tests/integration/     — Integration tests (in-process)
 ```
 
 ---
@@ -120,10 +121,10 @@ adhd/
 # Unit tests
 go test ./internal/... -v
 
-# Feature tests
-go run ./cmd/adhd test --features=features/adhd/
+# Scenario (E2E) tests — drive a live adhd binary and match features/adhd/ via internal/report
+go test ./tests/scenario/... -count=1
 
-# Integration tests
+# Integration tests — exercise packages in-process against tests/integration/
 go test ./tests/integration/... -v
 ```
 

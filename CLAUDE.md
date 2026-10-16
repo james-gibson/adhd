@@ -11,8 +11,9 @@ ADHD is a minimal-footprint CLI dashboard for alarm system monitoring. Single bi
 | Build binary | `go build -o bin/adhd ./cmd/adhd` |
 | Run dashboard | `./bin/adhd` |
 | Debug mode | `./bin/adhd -debug 2>&1` |
-| Feature tests | `go run ./cmd/adhd test --features=features/adhd/` |
+| Scenario (E2E) tests | `go test ./tests/scenario/... -count=1` |
 | Unit tests | `go test ./internal/... -v` |
+| Integration tests | `go test ./tests/integration/... -v` |
 
 ## Architecture
 
@@ -115,7 +116,7 @@ func TestDashboardIntegration(t *testing.T) {
 2. **No blocking I/O in Update()** — use tea.Cmd for async work
 3. **Feature discovery non-blocking** — if paths don't exist or fail, log + continue
 4. **OTEL is optional** — graceful degradation; dashboard works without metrics
-5. **No external commands in tests** — feature tests are deterministic
+5. **Feature specs are deterministic; scenario tests are black-box** — `features/adhd/*.feature` are declarative and matched by `internal/report` (no side effects). The scenario E2E tests in `tests/scenario/` deliberately spawn real `adhd`/`ocd-smoke-alarm` binaries and assert on their JSONL traffic, so a wire-format drift breaks them on purpose.
 
 ## Task Workflow
 
@@ -125,7 +126,7 @@ When adding features:
 2. Implement model changes (internal/dashboard/model.go)
 3. Update view if needed (internal/dashboard/view.go)
 4. Add unit tests for pure functions
-5. Run `go test ./internal/...` before committing
+5. Run `go test ./internal/...` (and `go test ./tests/scenario/... -count=1` when `features/adhd/` changes) before committing
 
 ## Known Limitations
 
