@@ -66,10 +66,10 @@ Feature: ADHD Headless Mode
   # inherits lezz demo's working directory (not the adhd source tree).
 
   Scenario: headless mode loads features from local features/adhd/ when present
-    Given the current working directory contains features/adhd/ with 40 files
+    Given the current working directory contains a features/adhd/ directory with feature files
     When adhd starts with --headless
-    Then the cluster has 40 feature lights
-    And adhd.features.list MCP tool returns 40 entries
+    Then the cluster has one feature light per loaded feature file
+    And adhd.features.list MCP tool returns one entry per loaded feature file
 
   Scenario: headless mode starts with zero features when local feature path is absent
     Given the current working directory does not contain features/adhd/
