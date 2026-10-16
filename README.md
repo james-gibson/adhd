@@ -10,6 +10,26 @@ Runs in two modes:
 
 ---
 
+## Trust after connection
+
+**A caller can connect to an MCP service; whether it is trusted after connecting is
+a separate question, and one most transport specifications do not answer.** This lab
+measures it. A caller carries a **42i distance** — the extent to which it has
+departed from **nominal** (the service level a call promises) against **linear time**
+(the shared tick) — and the distance maps to a **rung** that limits what the caller
+may read. A caller that keeps departing is removed from the routeable set.
+
+```
+ nominal ●────────────  the level a call promises
+          ╲
+           ╲ distance     +8 / +16 / +32 …
+            ●───────────  where it landed (linear time →)
+```
+
+One measure, regardless of source — a stale credential, a clock skew, a tampered
+receipt, a honeypot contact. Model: `kb/scripts/lab/PLANE.md`. Figures:
+`kb/scripts/lab/MATH.md`. Full page with references: `kb/scripts/lab/SPLASH.md`.
+
 ## Quick Start
 
 ```sh

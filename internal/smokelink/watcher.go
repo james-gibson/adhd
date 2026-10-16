@@ -61,11 +61,22 @@ type lastTargetStatus struct {
 
 // StatusResponse mimics ocd-smoke-alarm's status endpoint response
 type StatusResponse struct {
-	Service string         `json:"service"`
-	Live    bool           `json:"live"`
-	Ready   bool           `json:"ready"`
-	Targets []TargetStatus `json:"targets"`
-	Summary StatusSummary  `json:"summary"`
+	Service    string            `json:"service"`
+	Live       bool              `json:"live"`
+	Ready      bool              `json:"ready"`
+	Targets    []TargetStatus    `json:"targets"`
+	Components []ComponentStatus `json:"components"`
+	Summary    StatusSummary     `json:"summary"`
+}
+
+// ComponentStatus mirrors ocd-smoke-alarm's /status JSON component format.
+// Unhealthy components carry what the alarm itself observed — e.g. a security
+// event reported to /federation/report by a peer isotope.
+type ComponentStatus struct {
+	Name      string `json:"name"`
+	Healthy   bool   `json:"healthy"`
+	Detail    string `json:"detail,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 // TargetStatus mirrors ocd-smoke-alarm's /status JSON target format
@@ -214,6 +225,36 @@ func (w *Watcher) pollOnce(ctx context.Context, endpoint config.SmokeAlarmEndpoi
 				Status:     newStatus,
 				Details:    target.Message,
 				Latency:    time.Duration(target.LatencyMs) * time.Millisecond,
+				Source:     "poll",
+			}
+		}
+	}
+
+	// Components: surface what the alarm itself observed. An unhealthy component
+	// (e.g. a security event reported to /federation/report by a peer isotope — a
+	// tripped honeypot) becomes a light, so an observer dashboard shows it.
+	for _, comp := range status.Components {
+		key := fmt.Sprintf("%s:component:%s", endpoint.Name, comp.Name)
+		light := lights.StatusGreen
+		if !comp.Healthy {
+			light = lights.StatusRed
+		}
+
+		w.mu.Lock()
+		last, seen := w.lastState[key]
+		changed := !seen || last.status != light
+		if changed {
+			w.lastState[key] = lastTargetStatus{status: light, seen: time.Now()}
+		}
+		w.mu.Unlock()
+
+		if changed {
+			updates <- LightUpdate{
+				SourceName: endpoint.Name,
+				TargetID:   "component:" + comp.Name,
+				Name:       comp.Name,
+				Status:     light,
+				Details:    comp.Detail,
 				Source:     "poll",
 			}
 		}
