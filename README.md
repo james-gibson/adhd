@@ -78,7 +78,7 @@ In headless mode, adhd:
 - Receives a trust rung on the 42i capability lattice
 - Advertises `_adhd-isotope._tcp` via mDNS so other lab tools can discover it
 
-The `--demo` flag browses `_lezz-demo._tcp` and fetches `http://<host>:19100/cluster` to auto-configure without a config file.
+The `--demo` flag browses `_lezz-demo._tcp` and fetches `http://<host>:<port>/cluster` at the port the registry advertises in its mDNS SRV record (falling back to the well-known `19100` when none is advertised) to auto-configure without a config file. The localhost fallback registry is accepted only when a cluster it advertises answers a `/healthz` health probe, so a stale or ghost registry whose cluster has already gone away is ignored rather than adopted.
 
 ---
 

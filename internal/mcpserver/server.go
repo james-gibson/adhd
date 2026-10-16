@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/james-gibson/adhd/internal/config"
+	"github.com/james-gibson/adhd/internal/demo"
 	"github.com/james-gibson/adhd/internal/lights"
 	"github.com/james-gibson/adhd/internal/metricsapi"
 	"github.com/james-gibson/adhd/internal/proxy"
@@ -1885,16 +1886,15 @@ func (s *Server) resolveTargetViaDiscovery(ctx context.Context, targetIsotope st
 		if strings.Contains(normalizedEndpoint, normalizedTarget) || strings.Contains(normalizedTarget, normalizedEndpoint) {
 			return peer.Endpoint, peer.Name
 		}
+		// The peer's cluster registry lives on the well-known discovery port,
+		// not on the port the peer serves MCP (or its alarm) on — replace that
+		// port, never append to it. Appending produced URLs such as
+		// "http://host:5100:19100/cluster", which never resolved.
 		discoveryURL := ""
 		if peer.AlarmA != "" {
-			base := strings.TrimSuffix(peer.AlarmA, "/status")
-			discoveryURL = base + ":19100/cluster"
+			discoveryURL = demo.RegistryURLForAlarm(peer.AlarmA)
 		} else if peer.Endpoint != "" {
-			derived := peer.Endpoint
-			if idx := strings.LastIndex(derived, ":"); idx > 0 {
-				derived = derived[:idx] + ":19100/cluster"
-			}
-			discoveryURL = derived
+			discoveryURL = demo.RegistryURLForAlarm(peer.Endpoint)
 		}
 		if discoveryURL == "" {
 			continue
