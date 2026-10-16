@@ -58,6 +58,7 @@ type dynamicTool struct {
 	honeypot    bool
 	fakeResult  interface{}
 	handler     func(ctx context.Context, params interface{}) (interface{}, *jsonrpcError)
+	cluster     string // owning cluster name if any
 }
 
 // clusterPeerInfo tracks a peer ADHD instance discovered via adhd.cluster.join.
@@ -299,6 +300,9 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 
 	case "adhd.cluster.join":
 		result, respErr = s.handleClusterJoin(req.Params)
+
+	case "adhd.cluster.leave":
+		result, respErr = s.handleClusterLeave(req.Params)
 
 	case "adhd.hurl.run":
 		result, respErr = s.handleHurlRun(r.Context(), req.Params)
@@ -584,6 +588,20 @@ func (s *Server) handleToolsList() interface{} {
 			},
 		},
 		{
+			"name":        "adhd.cluster.leave",
+			"description": "Notify this ADHD instance that a cluster has left the registry (removes peer tracking and dynamic tools)",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "Cluster name to remove",
+					},
+				},
+				"required": []string{"name"},
+			},
+		},
+		{
 			"name":        "adhd.hurl.run",
 			"description": "Run a hurl HTTP test script and return pass/fail with output. hurl must be installed.",
 			"inputSchema": map[string]interface{}{
@@ -804,6 +822,8 @@ func (s *Server) handleToolsCall(ctx context.Context, params interface{}) (inter
 		result, errResult = s.handleRungChallenge(ctx, toolInput)
 	case "adhd.cluster.join":
 		result, errResult = s.handleClusterJoin(toolInput)
+	case "adhd.cluster.leave":
+		result, errResult = s.handleClusterLeave(toolInput)
 	case "adhd.hurl.run":
 		result, errResult = s.handleHurlRun(ctx, toolInput)
 	case "adhd.gh.run":
@@ -1460,6 +1480,7 @@ func (s *Server) registerRepoTool(clusterName, slug string) {
 			}
 			return s.fetchDependabotAlerts(ctx, capturedSlug, state)
 		},
+		cluster: clusterName,
 	})
 	slog.Info("registered per-repo tool", "tool", toolName, "cluster", clusterName)
 }
@@ -1483,6 +1504,7 @@ func (s *Server) registerHoneypotTool(clusterName, name, description string) {
 			"type":       "object",
 			"properties": map[string]interface{}{},
 		},
+		cluster: clusterName,
 	})
 	slog.Info("registered honeypot tool", "tool", name, "cluster", clusterName)
 }
@@ -1505,6 +1527,7 @@ func (s *Server) RegisterHoneypotTool(name, description string, fakeResult inter
 			"type":       "object",
 			"properties": map[string]interface{}{},
 		},
+		cluster: "",
 	})
 }
 
