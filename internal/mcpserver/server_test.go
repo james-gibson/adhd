@@ -353,8 +353,8 @@ func TestServerToolsList(t *testing.T) {
 	}
 
 	// Should have 17 ADHD tools
-	if len(tools) != 17 {
-		t.Errorf("expected 17 tools, got %d", len(tools))
+	if len(tools) != 18 {
+		t.Errorf("expected 18 tools, got %d", len(tools))
 	}
 
 	// Verify tool names
