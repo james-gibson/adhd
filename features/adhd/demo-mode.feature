@@ -4,7 +4,18 @@ Feature: ADHD Demo Mode Cluster Discovery
   from the cluster registry without requiring a hand-written config file.
   Discovery races two strategies: mDNS (_lezz-demo._tcp) and a direct HTTP
   poll of the well-known lezz demo registry at localhost:19100/cluster.
-  Whichever responds first wins; the other is discarded.
+  Whichever responds with a usable registry first wins; the other is discarded.
+
+  The mDNS strategy follows the registry's own port from the SRV record, so a
+  registry that is not on the well-known port is still found; 19100 is only the
+  fallback for a record that omits the port.
+
+  The localhost poll is a fallback with no advertiser vouching for it, so it
+  trusts a registry only while one of the cluster's alarms answers a health
+  probe. A registry process that outlives its cluster — a ghost — would
+  otherwise produce lights that can never go green, making adhd look broken
+  when the real cause is a stale registry entry. An mDNS answer needs no such
+  proof: an active advertisement is itself evidence the advertiser is running.
 
   Background:
     Given lezz demo is running on the local machine
@@ -13,6 +24,7 @@ Feature: ADHD Demo Mode Cluster Discovery
   Scenario: adhd discovers a cluster via the localhost HTTP registry
     Given the lezz demo registry is reachable at http://localhost:19100/cluster
     And the registry contains one cluster with alarm_a and alarm_b URLs
+    And at least one of its alarms answers a health probe
     When adhd starts with --demo
     Then adhd builds a config with two smoke_alarm endpoints
     And the endpoints match the alarm_a and alarm_b URLs from the cluster
@@ -22,11 +34,13 @@ Feature: ADHD Demo Mode Cluster Discovery
     And a _lezz-demo._tcp mDNS record is advertising on the LAN
     When adhd starts with --demo
     Then adhd resolves the host from the mDNS record
-    And fetches the cluster registry from that host on port 19100
+    And fetches the cluster registry from that host on the port advertised in the SRV record
+    And falls back to port 19100 when the SRV record carries no port
     And builds a config from the returned cluster data
 
   Scenario: adhd uses whichever discovery strategy responds first
     Given both mDNS and the localhost registry are available
+    And the localhost registry's cluster is alive
     When adhd starts with --demo
     Then adhd returns cluster data from the faster strategy
     And does not wait for the slower strategy to complete
@@ -36,6 +50,15 @@ Feature: ADHD Demo Mode Cluster Discovery
     When adhd starts with --demo
     Then adhd prints "demo discovery failed: no lezz demo found on the LAN within 10s"
     And exits with a non-zero status
+
+  Scenario: adhd ignores a ghost local registry whose cluster is gone
+    Given the lezz demo registry is reachable at http://localhost:19100/cluster
+    And its cluster advertises alarm URLs that no longer answer
+    And no _lezz-demo._tcp mDNS record is advertising
+    When adhd starts with --demo
+    Then adhd does not build a config from the ghost registry
+    And discovery fails within the timeout
+    And the failure names the stale registry entry
   # ── config construction ───────────────────────────────────────────────────────
 
   Scenario: cluster with one entry creates two smoke_alarm endpoints
