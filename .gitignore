@@ -28,6 +28,21 @@ go.work.sum
 # Build output
 bin/
 
+# Compiled binaries (root-level build outputs)
+/adhd
+/main
+
+# Machine-local agent/IDE config. Ignore specific files, never the whole
+# `.claude/` or `.cursor/` directory: those contain tracked project skills
+# (`.claude/skills/`, `.cursor/skills/`) that must stay committable. Excluding
+# an entire directory that holds tracked files makes `git add` refuse them.
+.mcp.json
+opencode.json
+.codex/config.toml
+.claude/launch.json
+.cursor/mcp.json
+.pi/extensions/open-knowledge.ts
+
 # Editor/IDE
 .DS_Store
 .claude/settings.local.json
