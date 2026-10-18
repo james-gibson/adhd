@@ -6,6 +6,10 @@
 mcp_server:
   enabled: true
   addr: ":9090"  # Change to ":9091", ":9092" etc. if port is in use
+  # ":9090" is all interfaces (0.0.0.0). Headless registration refuses to
+  # advertise an unguarded non-loopback MCP endpoint (adhd has no inbound auth)
+  # unless --force is passed — see the headless example below. Local-only
+  # instances should use "127.0.0.1:9090".
 
 # Health Monitoring: Local probes + remote smoke-alarm comparison
 health:
@@ -54,6 +58,9 @@ features:
 # Headless Mode (JSONL logging, no TUI):
 #   adhd ./bin/adhd --config ./adhd-example.yaml --headless
 #   adhd ./bin/adhd --config ./adhd-example.yaml --headless --log /tmp/adhd-traffic.jsonl
-#   adhd ./bin/adhd --config ./adhd-example.yaml --headless --smoke-alarm http://smoke-alarm:8080
+#   adhd ./bin/adhd --config ./adhd-example.yaml --headless --smoke-alarm http://smoke-alarm:8080 --force
+#     (--force acknowledges the :9090 all-interfaces bind; without it,
+#      registration refuses to advertise an unauthenticated non-loopback
+#      MCP endpoint and headless startup exits non-zero)
 #
 # Output: All MCP traffic as JSONL (JSON Lines) for streaming/analysis

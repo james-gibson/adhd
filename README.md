@@ -39,7 +39,10 @@ go build -o bin/adhd ./cmd/adhd
 # TUI mode
 ./bin/adhd --config adhd.yaml
 
-# Headless mode (MCP server)
+# Headless mode, registered from the config file (launchd/systemd shape)
+./bin/adhd --headless --config adhd.yaml
+
+# Headless mode, flag-driven registration (overrides the config)
 ./bin/adhd --headless --smoke-alarm http://localhost:8088
 
 # Auto-discover a running lezz demo cluster
@@ -66,17 +69,37 @@ go build -o bin/adhd ./cmd/adhd
 ## Headless Mode
 
 ```sh
-adhd --headless \
-  --smoke-alarm http://localhost:8088 \
-  --role prime \
-  --addr :9090
+# Config-driven: registration follows adhd.yaml (no CLI flag needed)
+adhd --headless --config adhd.yaml
+
+# Flag-driven: --smoke-alarm overrides the config
+adhd --headless --smoke-alarm http://localhost:8088
 ```
 
 In headless mode, adhd:
-- Serves an MCP endpoint at the configured address
-- Registers itself with smoke-alarm via `POST /isotope/register`
+- Serves an MCP endpoint at `mcp_server.addr`
+- Registers itself with smoke-alarm via `POST /isotope/register` — from the
+  `--smoke-alarm` flag when given, otherwise from the **first `smoke_alarm`
+  endpoint in the config file**, so a config-file-driven deployment registers
+  without a CLI flag
 - Receives a trust rung on the 42i capability lattice
 - Advertises `_adhd-isotope._tcp` via mDNS so other lab tools can discover it
+
+### The advertise guard (why registration can refuse)
+
+adhd's MCP surface has **no inbound auth**, so advertising a non-loopback bind
+would name an unauthenticated MCP endpoint to the LAN — an alarm offense. Before
+it registers or advertises, adhd probes its own endpoint and **refuses to start**
+(exit non-zero, nothing registered or advertised) unless either:
+
+- `mcp_server.addr` binds **loopback** (`127.0.0.1:9090`), so the advertisement
+  is inert to the LAN, or
+- a live probe shows an **auth gateway** answering on the endpoint (HTTP
+  401/403).
+
+`--force` is the explicit override for the deliberate LAN-discovery case (for
+example `lezz demo`, which binds `:PORT` on purpose). Pass it only when the
+operator has chosen to expose the endpoint.
 
 The `--demo` flag browses `_lezz-demo._tcp` and fetches `http://<host>:<port>/cluster` at the port the registry advertises in its mDNS SRV record (falling back to the well-known `19100` when none is advertised) to auto-configure without a config file. The localhost fallback registry is accepted only when a cluster it advertises answers a `/healthz` health probe, so a stale or ghost registry whose cluster has already gone away is ignored rather than adopted.
 
@@ -86,13 +109,15 @@ The `--demo` flag browses `_lezz-demo._tcp` and fetches `http://<host>:<port>/cl
 
 ```yaml
 # adhd.yaml
-smoke-alarms:
-  - http://localhost:8088
-  - http://localhost:8089
+mcp_server:
+  enabled: true
+  addr: "127.0.0.1:9090"   # loopback: required for registration unless --force
 
-headless:
-  role: prime
-  addr: :9090
+smoke_alarm:
+  - name: "primary"
+    endpoint: "http://localhost:8088"
+    interval: 10s
+    use_sse: true
 ```
 
 ---

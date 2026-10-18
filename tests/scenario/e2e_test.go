@@ -99,7 +99,7 @@ func startADHDHeadless(t *testing.T, smokeAlarmEndpoints []smokeEndpointCfg) *ad
 
 	yaml := fmt.Sprintf(`mcp_server:
   enabled: true
-  addr: ":0"
+  addr: "127.0.0.1:0"
 smoke_alarm:%s
 `, smokeBlock)
 
@@ -107,14 +107,16 @@ smoke_alarm:%s
 		t.Fatalf("write adhd config: %v", err)
 	}
 
-	// Pick a free port for MCP — pass as --mcp-addr override
+	// Pick a free port for MCP — pass as --mcp-addr override, on loopback:
+	// registration next advertises this address, and the advertise guard refuses
+	// an unguarded non-loopback bind.
 	mcpAddr := freeLocalAddr(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, ensureADHDBinary(t),
 		"--headless",
 		"--config", cfgPath,
-		"--mcp-addr", ":"+portOf(mcpAddr),
+		"--mcp-addr", "127.0.0.1:"+portOf(mcpAddr),
 		"--log", logPath,
 	)
 	stdout := &bytes.Buffer{}
@@ -264,6 +266,43 @@ func waitForLight(t *testing.T, mcpURL, lightName, wantStatus string, timeout ti
 }
 
 // ---- e2e tests --------------------------------------------------------------
+
+// TestE2EIsotopeRegistrationFromConfig verifies the fix for #15: a headless
+// adhd started with smoke_alarm in its config file — and no --smoke-alarm flag —
+// registers itself with that smoke-alarm. A launchd/systemd deployment has no
+// CLI flag to rely on, so registration must follow the config.
+func TestE2EIsotopeRegistrationFromConfig(t *testing.T) {
+	registered := make(chan struct{}, 1)
+	var once sync.Once
+	smokeAlarm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/isotope/register" && r.Method == http.MethodPost {
+			once.Do(func() { close(registered) })
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"name":          "adhd",
+				"role":          "prime",
+				"endpoint":      "127.0.0.1:0",
+				"protocol":      "mcp",
+				"trust_rung":    1,
+				"rung_name":     "dev-certified",
+				"registered_at": time.Now().UTC(),
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer smokeAlarm.Close()
+
+	// startADHDHeadless always writes smoke_alarm to the config file and never
+	// passes --smoke-alarm, so this is exactly the config-driven path.
+	startADHDHeadless(t, []smokeEndpointCfg{{name: "e2e-register", endpoint: smokeAlarm.URL}})
+
+	select {
+	case <-registered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("adhd did not register with the configured smoke-alarm (no --smoke-alarm flag was passed)")
+	}
+}
 
 // TestE2EHealthyService verifies the full chain: healthy mock service →
 // ocd-smoke-alarm (real) → adhd (real) → adhd.lights.list returns green.

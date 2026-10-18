@@ -42,3 +42,35 @@ func TestEnableMCPForAddr(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveSmokeAlarm guards the fix for #15: a config-file-driven headless
+// deployment (launchd/systemd) must register from its smoke_alarm list, not only
+// from the --smoke-alarm flag.
+func TestResolveSmokeAlarm(t *testing.T) {
+	t.Run("flag wins over config", func(t *testing.T) {
+		cfg := &config.Config{
+			SmokeAlarm: []config.SmokeAlarmEndpoint{{Name: "primary", Endpoint: "http://config:8088"}},
+		}
+		if got := resolveSmokeAlarm("http://flag:8088", cfg); got != "http://flag:8088" {
+			t.Fatalf("expected flag value to win, got %q", got)
+		}
+	})
+
+	t.Run("falls back to first configured endpoint", func(t *testing.T) {
+		cfg := &config.Config{
+			SmokeAlarm: []config.SmokeAlarmEndpoint{
+				{Name: "primary", Endpoint: "http://first:8088"},
+				{Name: "secondary", Endpoint: "http://second:8089"},
+			},
+		}
+		if got := resolveSmokeAlarm("", cfg); got != "http://first:8088" {
+			t.Fatalf("expected first configured endpoint, got %q", got)
+		}
+	})
+
+	t.Run("empty when neither is set", func(t *testing.T) {
+		if got := resolveSmokeAlarm("", &config.Config{}); got != "" {
+			t.Fatalf("expected no registration target, got %q", got)
+		}
+	})
+}
