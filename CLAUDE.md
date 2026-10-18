@@ -12,6 +12,7 @@ ADHD is a minimal-footprint CLI dashboard for alarm system monitoring. Single bi
 | Run dashboard | `./bin/adhd` |
 | Debug mode | `./bin/adhd -debug 2>&1` |
 | Scenario (E2E) tests | `go test ./tests/scenario/... -count=1` |
+| Scenario tests, interop required | `ADHD_REQUIRE_OCD_SMOKE_ALARM=1 go test ./tests/scenario/... -count=1` |
 | Unit tests | `go test ./internal/... -v` |
 | Integration tests | `go test ./tests/integration/... -v` |
 
@@ -117,6 +118,8 @@ func TestDashboardIntegration(t *testing.T) {
 3. **Feature discovery non-blocking** — if paths don't exist or fail, log + continue
 4. **OTEL is optional** — graceful degradation; dashboard works without metrics
 5. **Feature specs are deterministic; scenario tests are black-box** — `features/adhd/*.feature` are declarative and matched by `internal/report` (no side effects). The scenario E2E tests in `tests/scenario/` deliberately spawn real `adhd`/`ocd-smoke-alarm` binaries and assert on their JSONL traffic, so a wire-format drift breaks them on purpose.
+
+6. **The interop suite must not skip in a gate** — `tests/scenario` skips itself when `ocd-smoke-alarm` is missing, which is fine locally and useless as a release check. CI and the release workflow install the pinned binary via `.github/scripts/install-ocd-smoke-alarm.sh` (which fails closed, and exports `OCD_SMOKE_ALARM_BIN` so the suite spawns exactly that build) and set `ADHD_REQUIRE_OCD_SMOKE_ALARM=1` to turn the skip into a failure. If you bump the pin, bump it only in that script.
 
 ## Task Workflow
 

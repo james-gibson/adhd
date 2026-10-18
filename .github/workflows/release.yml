@@ -26,8 +26,21 @@ jobs:
           version: latest
           args: --timeout=5m
 
+      # Must run before the tests: the interop suite skips itself when
+      # ocd-smoke-alarm is absent, which would ship a release whose cross-repo
+      # contract check never ran. The installer fails closed if the binary is
+      # missing, and pins the exact path via OCD_SMOKE_ALARM_BIN.
+      - name: Install ocd-smoke-alarm
+        run: ./.github/scripts/install-ocd-smoke-alarm.sh
+
+      # -count=1 defeats the test cache, so a green result here always means
+      # these tests just ran against this commit.
       - name: Run tests
-        run: go test ./...
+        run: go test ./... -count=1 -timeout 300s
+        env:
+          # A missing smoke-alarm is a hard failure in the release gate, not a
+          # skip. A tag must not be publishable with the interop suite skipped.
+          ADHD_REQUIRE_OCD_SMOKE_ALARM: "1"
 
       - uses: goreleaser/goreleaser-action@v6
         with:

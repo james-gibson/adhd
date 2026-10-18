@@ -8,6 +8,13 @@
 //
 // If ocd-smoke-alarm changes its /status JSON format these tests will break,
 // which is intentional — they act as a contract check between the two binaries.
+//
+// The binary is resolved from $OCD_SMOKE_ALARM_BIN when set, otherwise built
+// from a sibling source tree, ~/.lezz/bin, or PATH.  When it cannot be found
+// these tests skip, which is convenient locally but dangerous in a gate: a
+// workflow that forgot to install the binary would go green having checked
+// nothing.  Setting $ADHD_REQUIRE_OCD_SMOKE_ALARM turns that skip into a hard
+// failure, and both CI and the release workflow set it.
 package scenario
 
 import (
@@ -34,6 +41,18 @@ import (
 
 // ---- binary builder ---------------------------------------------------------
 
+const (
+	// smokeAlarmBinEnv names the exact ocd-smoke-alarm binary to spawn. CI and
+	// the release workflow set it to the pinned build they installed, so these
+	// tests cannot silently exercise whichever copy PATH resolution finds.
+	smokeAlarmBinEnv = "OCD_SMOKE_ALARM_BIN"
+	// requireSmokeAlarmEnv turns "binary unavailable" from a skip into a hard
+	// failure. The skip is convenient locally and dangerous in a gate: a
+	// workflow that forgets the binary still goes green while the contract
+	// check never ran. Both workflows set this so that cannot happen.
+	requireSmokeAlarmEnv = "ADHD_REQUIRE_OCD_SMOKE_ALARM"
+)
+
 var (
 	buildSmokeAlarmOnce sync.Once
 	buildSmokeAlarmErr  error
@@ -43,6 +62,24 @@ var (
 func ensureSmokeAlarmBinary(t *testing.T) string {
 	t.Helper()
 	buildSmokeAlarmOnce.Do(func() {
+		// An explicitly pinned binary wins over every heuristic below: the
+		// caller has decided which contract this run is testing.
+		if pinned := strings.TrimSpace(os.Getenv(smokeAlarmBinEnv)); pinned != "" {
+			info, statErr := os.Stat(pinned)
+			switch {
+			case statErr != nil:
+				buildSmokeAlarmErr = fmt.Errorf("%s=%s is not usable: %w", smokeAlarmBinEnv, pinned, statErr)
+				return
+			case info.IsDir():
+				buildSmokeAlarmErr = fmt.Errorf("%s=%s is a directory, not a binary", smokeAlarmBinEnv, pinned)
+				return
+			case info.Mode().Perm()&0o111 == 0:
+				buildSmokeAlarmErr = fmt.Errorf("%s=%s is not executable (mode %s)", smokeAlarmBinEnv, pinned, info.Mode().Perm())
+				return
+			}
+			smokeAlarmBinary = pinned
+			return
+		}
 		// Prefer building from source when the sibling repo is present.
 		root, err := filepath.Abs(filepath.Join("..", "..", "..", "ocd-smoke-alarm"))
 		if err == nil {
@@ -81,9 +118,26 @@ func ensureSmokeAlarmBinary(t *testing.T) string {
 		smokeAlarmBinary = p
 	})
 	if buildSmokeAlarmErr != nil {
+		if smokeAlarmRequired() {
+			t.Fatalf("%s is set, so the interop suite must not skip: %v\n"+
+				"Install ocd-smoke-alarm (.github/scripts/install-ocd-smoke-alarm.sh) "+
+				"or unset %s to allow the skip.",
+				requireSmokeAlarmEnv, buildSmokeAlarmErr, requireSmokeAlarmEnv)
+		}
 		t.Skipf("skipping: ocd-smoke-alarm unavailable: %v", buildSmokeAlarmErr)
 	}
 	return smokeAlarmBinary
+}
+
+// smokeAlarmRequired reports whether a missing binary should fail rather than
+// skip. An unset, empty, "0" or "false" value leaves the local skip intact.
+func smokeAlarmRequired() bool {
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv(requireSmokeAlarmEnv))); v {
+	case "", "0", "false", "no":
+		return false
+	default:
+		return true
+	}
 }
 
 // ---- instance launcher ------------------------------------------------------
