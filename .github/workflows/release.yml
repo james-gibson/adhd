@@ -20,10 +20,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Pinned to the same version as ci.yml: a tag must gate on exactly the
+      # linter main was gated on, so a new upstream lint rule cannot block an
+      # otherwise-ready release. Do not use `latest` here.
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: latest
+          version: v2.11.4
           args: --timeout=5m
 
       # Must run before the tests: the interop suite skips itself when
