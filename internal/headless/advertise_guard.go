@@ -20,6 +20,14 @@ import (
 // names an unauthenticated MCP surface to the LAN — and as a monitored target
 // to smoke-alarm. That is the -42i "alarm offense" the federation is right to
 // yell about, so it must be impossible to ship by accident.
+//
+// The endpoint is "unlocked like a fire alarm": anyone who can reach it can
+// drive it, the way anyone can pull a pull station. That is right for an alarm
+// (raising it must be frictionless, and it only broadcasts) but wrong here —
+// adhd's endpoint is a control surface (adhd.gh.run, adhd.proxy,
+// adhd.cluster.join), not an indicator. This guard does not lock the panel;
+// binding loopback or fronting it with a gateway does. It refuses to advertise
+// the panel's address while the panel is unlocked.
 var ErrUnguardedEndpoint = errors.New("refusing to advertise an unauthenticated MCP endpoint beyond loopback")
 
 // GuardAdvertisedEndpoint is the fail-closed preflight for isotope
