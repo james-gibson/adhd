@@ -401,7 +401,15 @@ func (s *Server) handleMCPSSE(w http.ResponseWriter, r *http.Request) {
 	<-r.Context().Done()
 }
 
-// handleInitialize returns the initialize response
+// handleInitialize answers the MCP handshake: it returns the initialize response.
+//
+// The protocol revision is pinned to 2024-11-05, but the version is NOT the
+// gate. Protocol drift is real: a peer speaking an older revision should be
+// accepted with a request to upgrade *when the trust chain is present*
+// (isotope/rung), and refused when it is not. Access is decided by the trust
+// chain, not by the protocol string — see adhd#27. The surface negotiated here
+// is the fire marshal's: smoke-alarm's, reached by proxy through adhd with the
+// isotopes' help.
 func (s *Server) handleInitialize() interface{} {
 	return map[string]interface{}{
 		"protocolVersion": "2024-11-05",
