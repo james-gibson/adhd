@@ -20,6 +20,7 @@ injects the caller IP for audit and honeypot purposes only.
 | Security events filed | `honeypot_triggered` and `rung_challenge_failed` only |
 | `adhd.proxy` | accepts a **caller-supplied** `target_endpoint` + `auth` (bearer/api-key/oauth2) |
 | Host / `Origin` validation | **none** |
+| Caller attribution | `r.RemoteAddr` only; `internal/telemetry` is a **stub** (no spans, no `traceparent`) |
 | Isotope registration | follows config, flag overrides (#26) |
 | Advertise guard | refuses an unguarded non-loopback bind unless `--force` (#26) |
 | Protocol version | not a gate; `initialize` ignores the client's revision (#28) |
@@ -50,7 +51,14 @@ matter.
    tools is never logged and files nothing — the panel has a trap for the naive
    and no alarm for the deliberate.
 6. **Attribution defeat.** Under (2) the logged caller address is `127.0.0.1`,
-   so the knock's caller-IP record is worthless for a rebound caller.
+   so the knock's caller-IP record is worthless for a rebound caller. The
+   intended fix is to attribute by **isotope identity carried on an OTel trace**
+   rather than by network address — a trace survives the rebind that collapses
+   the IP. Two caveats keep it honest: `internal/telemetry` is currently a
+   **stub** (no spans, no `traceparent` propagation), and a trace context is
+   *caller-supplied*, so it must be **signed by the isotope** to be proof rather
+   than a claim. Trace = provenance, isotope signature = proof — the same split
+   as the knock.
 7. **Replayed or static knocks.** A knock sequence that is not bound to a
    signed, nonce-carrying record is replayable; see the knock section.
 
@@ -113,6 +121,12 @@ promoted to authorizer.
 
 **Is a loopback bind enough?** Against the LAN, yes. Against local processes and
 DNS rebinding, no.
+
+**If the caller IP is `127.0.0.1`, how is a caller attributed?** Today it is not —
+`r.RemoteAddr` is all we log, and rebinding or a local caller makes it useless.
+Intended: attribute by isotope identity on an OTel trace, signed by the isotope so
+the trace is proof rather than a claim. Neither the tracing (`internal/telemetry`
+is a stub) nor the signature binding exists yet.
 
 ## Reporting
 

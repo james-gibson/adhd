@@ -244,6 +244,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // handleMCPRPC processes JSON-RPC requests
 func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 	// Inject caller IP into context for honeypot and audit logging.
+	//
+	// RemoteAddr is a stopgap, not attribution: it is defeated by a local caller,
+	// and — with no Host/Origin validation (adhd#29) — by DNS rebinding, where a
+	// rebound caller logs as 127.0.0.1. The intended attribution is the isotope
+	// identity carried on an OTel trace, signed by the isotope so the trace is
+	// proof rather than a caller-supplied claim. internal/telemetry is a stub
+	// today, so nothing does that yet.
 	ctxWithIP := context.WithValue(r.Context(), callerIPKey{}, r.RemoteAddr)
 	r = r.WithContext(ctxWithIP)
 
