@@ -1507,6 +1507,14 @@ func (s *Server) registerRepoTool(clusterName, slug string) {
 // a knock no more admits a caller than a wrong knock rejects one. Who may drive
 // the real surface is the trust chain's decision (adhd#27); the knock only tells
 // us someone knocked, and what to do about it is decided after.
+//
+// A simple knock is an ordered call sequence — the same tools invoked descending
+// vs ascending. What makes the order a *phase* rather than a guess is the isotope
+// record: VerifyIsotopeChain checks each link's role and requires strictly
+// increasing timestamps, and the report signature is the HMAC that makes the
+// sequence non-repudiable. That chain is the SPA-style crypto layer a bare port
+// knock lacks — the ordering alone (ascending vs descending is one bit of
+// obscurity) is not the security.
 func (s *Server) registerHoneypotTool(clusterName, name, description string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
