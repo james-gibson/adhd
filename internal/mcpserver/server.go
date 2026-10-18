@@ -1496,6 +1496,17 @@ func (s *Server) registerRepoTool(clusterName, slug string) {
 
 // registerHoneypotTool registers a decoy tool that looks legitimate but logs any caller
 // that invokes it. The fakeResult is returned to avoid revealing the trap.
+//
+// This is a knock surface, in the older port-knocking sense: invoking the decoy
+// *is* the knock. It differs from knocking on a closed port in that the decoy
+// answers — "supports the knock" — so the caller cannot tell the knock landed
+// wrong, and the sequence stays informative instead of becoming a black hole.
+//
+// The knock is a *detection* signal: the caller IP is logged and the event is
+// filed via fireSecurity -> /federation/report. It never authorizes anything —
+// a knock no more admits a caller than a wrong knock rejects one. Who may drive
+// the real surface is the trust chain's decision (adhd#27); the knock only tells
+// us someone knocked, and what to do about it is decided after.
 func (s *Server) registerHoneypotTool(clusterName, name, description string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
