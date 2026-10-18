@@ -112,7 +112,10 @@ Feature: ADHD Demo Showcase — All Features Working Together
     Then each step produces visible, correct output
     And the walkthrough demonstrates isotopes, skills, honeypots, and features as one system
 
+  @red @blocked-on-adhd
   Scenario: pressing v on a certified demo feature triggers live verification
+    # BLOCKED: adhd has not implemented adhd.features.verify (james-gibson/adhd#24)
+    # Why this matters: the demo's headline "press v to verify" action is asserted as live; it calls an absent tool.
     Given "adhd/mdns-discovery" is selected in the feature browser
     And ADHD is at rung 3
     When the user presses v
