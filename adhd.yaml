@@ -3,9 +3,14 @@
 
 # MCP Server: expose dashboard lights as an MCP endpoint
 # Other agents can query light status via JSON-RPC
+#
+# SECURITY: adhd's MCP surface has no inbound auth, and headless mode registers
+# this address with smoke-alarm and advertises it over mDNS. A non-loopback bind
+# (":9090" is all interfaces, i.e. 0.0.0.0) is therefore refused unless --force
+# is passed; keep it on loopback, or front it with an auth gateway.
 mcp_server:
   enabled: true
-  addr: ":9090"
+  addr: "127.0.0.1:9090"
   # Optional separate SSE address (not yet implemented)
   # sse_addr: ":9091"
 

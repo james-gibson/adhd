@@ -280,7 +280,7 @@ func TestHeadlessIsotopeRegistration(t *testing.T) {
 	cfg := &config.Config{
 		MCPServer: config.MCPServerConfig{
 			Enabled: true,
-			Addr:    ":0",
+			Addr:    "127.0.0.1:0", // loopback: RegisterAsIsotope refuses to advertise an unguarded bind
 		},
 	}
 

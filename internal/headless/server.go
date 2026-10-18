@@ -35,6 +35,7 @@ type Server struct {
 	trustLevel   int
 	zeroconfSrv  isotope.Server
 	identity     isotope.InstanceIdentity
+	forceAdvert  bool // --force: advertise even when the MCP bind is unguarded
 	mu           sync.Mutex
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -473,8 +474,25 @@ func (s *Server) handleIncomingPushLogs(logs []map[string]interface{}) error {
 	return nil
 }
 
+// SetForceAdvertise bypasses the advertise guard for the deliberate
+// LAN-discovery case (e.g. `lezz demo`). It is an explicit operator override
+// and never the default: an unguarded non-loopback MCP endpoint that is
+// advertised is an alarm offense.
+func (s *Server) SetForceAdvertise(force bool) {
+	s.forceAdvert = force
+}
+
 // RegisterAsIsotope registers this ADHD instance with smoke-alarm and stores the assigned trust rung.
 func (s *Server) RegisterAsIsotope(smokeAlarmURL string) error {
+	// Fail closed before emitting anything: refuse to name an unauthenticated
+	// MCP endpoint (to smoke-alarm or via mDNS) unless an auth gateway answers
+	// on it or the operator passed --force.
+	if !s.forceAdvert {
+		if err := GuardAdvertisedEndpoint(s.ctx, s.cfg.MCPServer.Addr); err != nil {
+			return err
+		}
+	}
+
 	// Determine role for registration
 	role := s.role
 	if role == RoleStandalone {

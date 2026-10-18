@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -31,7 +32,24 @@ var (
 	bufferSizeFlag = flag.Int("buffer-size", 1000, "max number of logs to buffer before pushing to prime")
 	mcpAddrFlag    = flag.String("mcp-addr", "", "override MCP server address (e.g., :0 for random port)")
 	demoFlag       = flag.Bool("demo", false, "discover a lezz demo cluster via mDNS instead of loading config")
+	forceFlag      = flag.Bool("force", false, "advertise/register even if the MCP endpoint is unguarded (non-loopback) — an explicit LAN-discovery override")
 )
+
+// resolveSmokeAlarm picks the smoke-alarm endpoint to register with. The
+// --smoke-alarm flag wins; otherwise the first configured smoke_alarm endpoint
+// is used, so a config-file-driven deployment (a launchd/systemd daemon) that
+// sets smoke_alarm in adhd.yaml registers and advertises without needing a CLI
+// flag. Before either is advertised, RegisterAsIsotope runs the advertise guard
+// so an unguarded MCP bind cannot be named to the LAN by accident.
+func resolveSmokeAlarm(flagValue string, cfg *config.Config) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	if len(cfg.SmokeAlarm) > 0 {
+		return cfg.SmokeAlarm[0].Endpoint
+	}
+	return ""
+}
 
 // enableMCPForAddr applies an explicit --mcp-addr override to cfg. Supplying an
 // address is a request to serve MCP there, so it also enables the hosted MCP
@@ -153,13 +171,14 @@ func main() {
 			}
 		}()
 		// Setup message queue for prime-plus topology if configured
+		smokeTarget := resolveSmokeAlarm(*smokeAlarmURL, cfg)
 		if *primePlusFlag {
 			primeAddr := *primeAddrFlag
 
 			// If no prime address specified but smoke-alarm is configured, try auto-discovery
-			if primeAddr == "" && *smokeAlarmURL != "" {
+			if primeAddr == "" && smokeTarget != "" {
 				slog.Info("auto-discovering prime instance via smoke-alarm")
-				if server.AutoDiscoverPrime(*smokeAlarmURL) {
+				if server.AutoDiscoverPrime(smokeTarget) {
 					primeAddr = server.GetPrimeAddr()
 				} else {
 					slog.Warn("prime auto-discovery failed, will continue without buffering")
@@ -173,9 +192,20 @@ func main() {
 			}
 		}
 
-		// Register with smoke-alarm if configured
-		if *smokeAlarmURL != "" {
-			if err := server.RegisterAsIsotope(*smokeAlarmURL); err != nil {
+		// Register with smoke-alarm and advertise over mDNS. The --smoke-alarm
+		// flag wins, but a config-file-driven deployment registers from its
+		// first smoke_alarm entry. Registration is guarded: an unguarded
+		// (non-loopback) MCP endpoint is refused unless --force is passed, and
+		// refusal fails closed rather than shipping the offense.
+		if smokeTarget != "" {
+			server.SetForceAdvertise(*forceFlag)
+			if err := server.RegisterAsIsotope(smokeTarget); err != nil {
+				if errors.Is(err, headless.ErrUnguardedEndpoint) {
+					slog.Error("refusing to advertise an unguarded MCP endpoint", "error", err)
+					fmt.Fprintln(os.Stderr, "refusing to start:", err)
+					_ = server.Shutdown()
+					os.Exit(1)
+				}
 				slog.Warn("failed to register as isotope", "error", err)
 			}
 		}

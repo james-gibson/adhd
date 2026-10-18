@@ -57,6 +57,28 @@ Feature: ADHD Headless Mode
     Then a WARN entry is logged: "failed to register as isotope"
     And adhd continues running
     And the MCP server is still available
+
+  Scenario: headless mode registers from the config file without --smoke-alarm
+    Given the config has a smoke_alarm entry at http://localhost:8080
+    And adhd is started with --headless and no --smoke-alarm flag
+    When adhd starts
+    Then adhd POSTs to http://localhost:8080/isotope/register
+    And the smoke-alarm's isotope list includes adhd
+
+  Scenario: headless mode refuses to advertise an unguarded MCP endpoint
+    Given the config has mcp_server.addr="0.0.0.0:9090" and a smoke_alarm entry
+    And adhd is started with --headless
+    Then adhd logs an ERROR "refusing to advertise an unguarded MCP endpoint"
+    And adhd exits with a non-zero status
+    And no _adhd-isotope._tcp mDNS record is advertised
+    And the smoke-alarm receives no /isotope/register call
+
+  Scenario: --force overrides the advertise guard for deliberate LAN discovery
+    Given the config has mcp_server.addr="0.0.0.0:9090" and a smoke_alarm entry
+    And adhd is started with --headless --force
+    When adhd starts
+    Then adhd POSTs to the configured smoke-alarm /isotope/register
+    And adhd advertises _adhd-isotope._tcp via mDNS
   # ── feature loading ───────────────────────────────────────────────────────────
   # Headless mode loads features from the local filesystem relative to the
   # current working directory, exactly as TUI mode does. When the working
