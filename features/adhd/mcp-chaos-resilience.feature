@@ -32,9 +32,9 @@ Feature: MCP Tool Chaos Resilience
   # ── tool list consistency ──────────────────────────────────────────────────
 
   Scenario: tools/list response remains stable during chaos
-    Given tools/list returns 16 tools initially
+    Given tools/list returns a stable set of tools initially
     When tools/list is called repeatedly during chaos test
-    Then tool count remains 16 across all calls
+    Then the tool count is unchanged across all calls
     And tool names remain consistent
     And tool descriptions are identical
     And no tools appear and disappear unpredictably

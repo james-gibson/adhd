@@ -79,9 +79,9 @@ Feature: ADHD Demo Mode Cluster Discovery
   # the features it was deployed with, not remote features from other nodes.
 
   Scenario: adhd in --demo mode loads features from the local filesystem
-    Given a local features/adhd/ directory exists with 40 feature files
+    Given a local features/adhd/ directory exists with feature files
     When adhd starts with --demo
-    Then 40 features are loaded from the local path
+    Then all feature files from the local path are loaded
     And no features are fetched from the remote cluster nodes
 
   Scenario: adhd in --demo mode shows no features when local path is absent
