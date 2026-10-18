@@ -45,9 +45,12 @@ jobs:
           # skip. A tag must not be publishable with the interop suite skipped.
           ADHD_REQUIRE_OCD_SMOKE_ALARM: "1"
 
+      # Pinned to an exact GoReleaser release: a `~> v2` range floats to the
+      # newest v2.x at run time, so a GoReleaser bump could change published
+      # artifacts with no change to this repo. Bump deliberately.
       - uses: goreleaser/goreleaser-action@v6
         with:
-          version: "~> v2"
+          version: "v2.18.3"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
