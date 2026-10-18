@@ -39,3 +39,4 @@ jobs:
         run: go test ./... -count=1 -race -timeout 300s
         env:
           ADHD_REQUIRE_OCD_SMOKE_ALARM: "1"
+          OCD_SMOKE_ALARM_BIN: "/tmp/definitely-not-here/ocd-smoke-alarm"
