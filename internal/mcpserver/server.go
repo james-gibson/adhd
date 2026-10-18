@@ -244,6 +244,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // handleMCPRPC processes JSON-RPC requests
 func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 	// Inject caller IP into context for honeypot and audit logging.
+	//
+	// RemoteAddr is a stopgap, not attribution: it is defeated by a local caller,
+	// and — with no Host/Origin validation (adhd#29) — by DNS rebinding, where a
+	// rebound caller logs as 127.0.0.1. Golden attribution is the entry id of the
+	// session established at the cluster's ingress: assigned, not supplied. This
+	// tool surface holds no session, so it should cite that entry id (carried on
+	// an OTel trace and sealed by the isotope) rather than derive an identity from
+	// an address. internal/telemetry is a stub today, so none of that exists yet.
 	ctxWithIP := context.WithValue(r.Context(), callerIPKey{}, r.RemoteAddr)
 	r = r.WithContext(ctxWithIP)
 
@@ -401,7 +409,15 @@ func (s *Server) handleMCPSSE(w http.ResponseWriter, r *http.Request) {
 	<-r.Context().Done()
 }
 
-// handleInitialize returns the initialize response
+// handleInitialize answers the MCP handshake: it returns the initialize response.
+//
+// The protocol revision is pinned to 2024-11-05, but the version is NOT the
+// gate. Protocol drift is real: a peer speaking an older revision should be
+// accepted with a request to upgrade *when the trust chain is present*
+// (isotope/rung), and refused when it is not. Access is decided by the trust
+// chain, not by the protocol string — see adhd#27. The surface negotiated here
+// is the fire marshal's: smoke-alarm's, reached by proxy through adhd with the
+// isotopes' help.
 func (s *Server) handleInitialize() interface{} {
 	return map[string]interface{}{
 		"protocolVersion": "2024-11-05",
@@ -1488,6 +1504,28 @@ func (s *Server) registerRepoTool(clusterName, slug string) {
 
 // registerHoneypotTool registers a decoy tool that looks legitimate but logs any caller
 // that invokes it. The fakeResult is returned to avoid revealing the trap.
+//
+// This is a knock surface, in the older port-knocking sense: invoking the decoy
+// *is* the knock. It differs from knocking on a closed port in that the decoy
+// answers — "supports the knock" — so the caller cannot tell the knock landed
+// wrong, and the sequence stays informative instead of becoming a black hole.
+//
+// The knock is a *detection* signal: the caller IP is logged and the event is
+// filed via fireSecurity -> /federation/report. It never authorizes anything —
+// a knock no more admits a caller than a wrong knock rejects one. Who may drive
+// the real surface is the trust chain's decision (adhd#27); the knock only tells
+// us someone knocked, and what to do about it is decided after.
+//
+// A simple knock is an ordered call sequence — the same tools invoked descending
+// vs ascending, or addressed proxy hops called in scrambled order (Enigma-style).
+// No single phase carries the security: each ordering is one bit, and it is the
+// *collection* of phases that the verifier checks against the outcome. The order
+// is a *phase* rather than a guess because the isotope record fixes it —
+// VerifyIsotopeChain checks each link's role and requires strictly increasing
+// timestamps, signed so the sequence is non-repudiable. The clock order is
+// required, not incidental: an external sidecar verifies every hop against the
+// shared tick, so no hop vouches for itself. Simple example: A -> B -> C, each
+// with a different job.
 func (s *Server) registerHoneypotTool(clusterName, name, description string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
