@@ -24,8 +24,11 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # Installs the version pinned in the script — the same one the release
+      # workflow uses — and fails closed if it is not runnable, so the interop
+      # suite cannot quietly skip here either.
       - name: Install ocd-smoke-alarm
-        run: go install github.com/james-gibson/smoke-alarm/cmd/ocd-smoke-alarm@latest
+        run: ./.github/scripts/install-ocd-smoke-alarm.sh
 
       - name: Lint
         uses: golangci/golangci-lint-action@v7
@@ -34,3 +37,5 @@ jobs:
 
       - name: Test
         run: go test ./... -count=1 -race -timeout 300s
+        env:
+          ADHD_REQUIRE_OCD_SMOKE_ALARM: "1"
