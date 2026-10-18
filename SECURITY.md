@@ -20,7 +20,7 @@ injects the caller IP for audit and honeypot purposes only.
 | Security events filed | `honeypot_triggered` and `rung_challenge_failed` only |
 | `adhd.proxy` | accepts a **caller-supplied** `target_endpoint` + `auth` (bearer/api-key/oauth2) |
 | Host / `Origin` validation | **none** |
-| Caller attribution | `r.RemoteAddr` only; `internal/telemetry` is a **stub** (no spans, no `traceparent`) |
+| Caller attribution | `r.RemoteAddr` at the tool surface only; the ingress session entry id is not carried |
 | Isotope registration | follows config, flag overrides (#26) |
 | Advertise guard | refuses an unguarded non-loopback bind unless `--force` (#26) |
 | Protocol version | not a gate; `initialize` ignores the client's revision (#28) |
@@ -50,15 +50,18 @@ matter.
 5. **Honeypot evasion.** An attacker who ignores the decoys and calls the real
    tools is never logged and files nothing — the panel has a trap for the naive
    and no alarm for the deliberate.
-6. **Attribution defeat.** Under (2) the logged caller address is `127.0.0.1`,
-   so the knock's caller-IP record is worthless for a rebound caller. The
-   intended fix is to attribute by **isotope identity carried on an OTel trace**
-   rather than by network address — a trace survives the rebind that collapses
-   the IP. Two caveats keep it honest: `internal/telemetry` is currently a
-   **stub** (no spans, no `traceparent` propagation), and a trace context is
-   *caller-supplied*, so it must be **signed by the isotope** to be proof rather
-   than a claim. Trace = provenance, isotope signature = proof — the same split
-   as the knock.
+6. **Attribution defeat.** Under (2) the logged caller address is `127.0.0.1`, so
+   the knock's caller-IP record is worthless for a rebound caller. The intended
+   fix is *not* a better IP source: **golden attribution is the entry id of the
+   session established at the cluster's ingress, and it is not supplied by the
+   caller.** The ingress is the admission layer that holds the session (`A` in
+   the lab's verification chain, *presence*); the MCP tool surface is the next
+   layer (`B`) and holds no session — which is why `RemoteAddr` at `B` is
+   structurally the wrong source. `B` should *cite* the entry id `A` assigned,
+   carried on the OTel trace and sealed by the isotope so it cannot be forged in
+   transit. State today: none of it exists — `internal/telemetry` is a stub, and
+   the chain does not yet carry anything from A to B (the alert path is unwired
+   upstream, `smoke-alarm#24`).
 7. **Replayed or static knocks.** A knock sequence that is not bound to a
    signed, nonce-carrying record is replayable; see the knock section.
 
@@ -123,10 +126,11 @@ promoted to authorizer.
 DNS rebinding, no.
 
 **If the caller IP is `127.0.0.1`, how is a caller attributed?** Today it is not —
-`r.RemoteAddr` is all we log, and rebinding or a local caller makes it useless.
-Intended: attribute by isotope identity on an OTel trace, signed by the isotope so
-the trace is proof rather than a claim. Neither the tracing (`internal/telemetry`
-is a stub) nor the signature binding exists yet.
+`r.RemoteAddr` is all we log, and rebinding or a local caller makes it useless. By
+design, attribution is the **entry id of the ingress session**: assigned when the
+caller enters the cluster, never supplied by the caller. The tool surface *cites*
+that id rather than deriving an identity from an address. Neither the ingress
+session id nor the trace that would carry it exists in adhd yet.
 
 ## Reporting
 

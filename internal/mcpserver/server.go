@@ -247,10 +247,11 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 	//
 	// RemoteAddr is a stopgap, not attribution: it is defeated by a local caller,
 	// and — with no Host/Origin validation (adhd#29) — by DNS rebinding, where a
-	// rebound caller logs as 127.0.0.1. The intended attribution is the isotope
-	// identity carried on an OTel trace, signed by the isotope so the trace is
-	// proof rather than a caller-supplied claim. internal/telemetry is a stub
-	// today, so nothing does that yet.
+	// rebound caller logs as 127.0.0.1. Golden attribution is the entry id of the
+	// session established at the cluster's ingress: assigned, not supplied. This
+	// tool surface holds no session, so it should cite that entry id (carried on
+	// an OTel trace and sealed by the isotope) rather than derive an identity from
+	// an address. internal/telemetry is a stub today, so none of that exists yet.
 	ctxWithIP := context.WithValue(r.Context(), callerIPKey{}, r.RemoteAddr)
 	r = r.WithContext(ctxWithIP)
 
