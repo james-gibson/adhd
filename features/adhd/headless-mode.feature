@@ -80,20 +80,28 @@ Feature: ADHD Headless Mode
     Then adhd POSTs to the configured smoke-alarm /isotope/register
     And adhd advertises _adhd-isotope._tcp via mDNS
   # ── feature loading ───────────────────────────────────────────────────────────
-  # Headless mode loads features from the local filesystem relative to the
-  # current working directory, exactly as TUI mode does. When the working
-  # directory does not contain a features/adhd/ path, no features are loaded
-  # and the MCP tools/list response returns an empty features list.
-  # This is expected behaviour in lezz demo, where the headless adhd process
-  # inherits lezz demo's working directory (not the adhd source tree).
+  # Intended (not implemented): headless mode would load Gherkin features from
+  # features/adhd/ relative to the working directory, exactly as TUI mode does,
+  # and expose them via adhd.features.list.
+  #
+  # Actual today: internal/headless/server.go builds feature lights from
+  # cfg.Features.Binaries (configured capability metadata), not from .feature
+  # files, and the MCP server has no adhd.features.list tool. The two scenarios
+  # below are therefore @red — see james-gibson/adhd#24.
 
+  @red @blocked-on-adhd
   Scenario: headless mode loads features from local features/adhd/ when present
+    # BLOCKED: headless does not load Gherkin features; it builds lights from cfg.Features.Binaries (james-gibson/adhd#24)
+    # Why this matters: the scenario claims .feature files become feature lights and adhd.features.list entries; neither exists.
     Given the current working directory contains a features/adhd/ directory with feature files
     When adhd starts with --headless
     Then the cluster has one feature light per loaded feature file
     And adhd.features.list MCP tool returns one entry per loaded feature file
 
+  @red @blocked-on-adhd
   Scenario: headless mode starts with zero features when local feature path is absent
+    # BLOCKED: headless does not load Gherkin features, so there is no local feature path to be absent (james-gibson/adhd#24)
+    # Why this matters: the empty-list behaviour is asserted for a tool and loader that do not exist.
     Given the current working directory does not contain features/adhd/
     When adhd starts with --headless
     Then no feature lights are created
