@@ -31,6 +31,7 @@ bin/
 # Compiled binaries (root-level build outputs)
 /adhd
 /main
+/speccorpus
 
 # Machine-local agent/IDE config. Ignore specific files, never the whole
 # `.claude/` or `.cursor/` directory: those contain tracked project skills
