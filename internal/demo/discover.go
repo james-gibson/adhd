@@ -71,9 +71,10 @@ func RegistryURLForAlarm(alarmURL string) string {
 
 // ProjectEntry describes a project within a cluster that exposes an MCP server.
 type ProjectEntry struct {
-	Name   string `json:"name"`    // short name, e.g. "tuner", "adhd"
-	Repo   string `json:"repo"`    // GitHub slug, e.g. "james-gibson/tuner"
-	MCPURL string `json:"mcp_url"` // base URL of the project's MCP server
+	ID     string `json:"id,omitempty"` // stable seed id; namespaces the tool
+	Name   string `json:"name"`         // short name, e.g. "tuner", "adhd"
+	Repo   string `json:"repo"`         // GitHub slug, e.g. "james-gibson/tuner"
+	MCPURL string `json:"mcp_url"`      // base URL of the project's MCP server
 }
 
 // ClusterInfo mirrors the JSON published by lezz demo's /cluster endpoint.

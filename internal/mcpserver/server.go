@@ -14,16 +14,20 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/james-gibson/adhd/internal/config"
 	"github.com/james-gibson/adhd/internal/demo"
 	"github.com/james-gibson/adhd/internal/lights"
 	"github.com/james-gibson/adhd/internal/metricsapi"
+	"github.com/james-gibson/adhd/internal/mirror"
 	"github.com/james-gibson/adhd/internal/proxy"
 	"github.com/james-gibson/adhd/internal/smoketest"
+	"github.com/james-gibson/adhd/internal/tearsheet"
 )
 
 // TopologyProvider is a function that returns current topology info
@@ -49,6 +53,30 @@ type SecurityAlertHandler func(level, event string, details map[string]interface
 
 // callerIPKey is a context key for the HTTP caller's remote address.
 type callerIPKey struct{}
+
+// PublicTickSeconds is the width of the public tick. The tick is
+// floor(unix_seconds / PublicTickSeconds): every host with a synced clock
+// agrees on it without a coordinator.
+const PublicTickSeconds = 5
+
+// PathGraceTicks is the acceptance window for a negotiated route: the tick it
+// was negotiated for, plus one. A negotiation that starts late in a tick can
+// finish in the next and still be used. The bet is that a route one tick late
+// is probably still good; two ticks late is refused.
+const PathGraceTicks = 1
+
+// tickWithinGrace reports whether a route negotiated on negotiatedTick may be
+// used at now. Future ticks are not accepted (clock skew is not lateness), and
+// lateness is bounded by PathGraceTicks.
+func tickWithinGrace(negotiatedTick, now uint64) bool {
+	return negotiatedTick <= now && now-negotiatedTick <= PathGraceTicks
+}
+
+// PublicTick returns the public tick for t. Unix seconds are UTC by
+// definition, so no timezone conversion is needed or wanted.
+func PublicTick(t time.Time) uint64 {
+	return uint64(t.Unix() / PublicTickSeconds)
+}
 
 // dynamicTool is a runtime-registered MCP tool added when a cluster joins.
 // honeypot tools return plausible-looking fake results but log the caller's identity.
@@ -81,13 +109,44 @@ type PathHop struct {
 	Receipt  string `json:"receipt"`
 }
 
-// NegotiatedPath is a pre-verified multi-hop trust path to a target isotope.
+// pathDeniedMethods are the calls a route does not grant. A segment authorises
+// execution along a map; it does not authorise enumerating the surface, because
+// the surface (skills, proxies, honeypots) changes every tick and a single
+// tools/list inside the grace window would leak the map the route only samples.
+var pathDeniedMethods = map[string]bool{
+	"tools/list":     true,
+	"resources/list": true,
+	"prompts/list":   true,
+	"initialize":     true,
+}
+
+// PathSegment is one hop's capability. It is the unit a caller must know: a
+// segment names the endpoint, the feature and the tick it was negotiated for.
+// It is accepted on that tick and the next (one-tick grace), is reusable by any
+// holder in that window, and composes freely — knowing more segments routes
+// further.
+type PathSegment struct {
+	ID        string `json:"id"`
+	From      string `json:"from,omitempty"`
+	To        string `json:"to"`
+	FeatureID string `json:"feature_id"`
+	Tick      uint64 `json:"tick"`
+	Rung      int    `json:"rung"`
+	Nonce     string `json:"nonce,omitempty"`
+	Receipt   string `json:"receipt,omitempty"`
+}
+
+// NegotiatedPath is a pre-verified path to a target isotope. Segments is one
+// token per hop: a multi-hop caller must hold every segment, and each hop is
+// validated where it is used.
 type NegotiatedPath struct {
-	Target       string    `json:"target"`
-	Hops         []PathHop `json:"hops"`
-	MinRung      int       `json:"min_rung"`
-	FeatureID    string    `json:"feature_id"`
-	NegotiatedAt time.Time `json:"negotiated_at"`
+	Target       string        `json:"target"`
+	Hops         []PathHop     `json:"hops"`
+	Segments     []PathSegment `json:"segments,omitempty"`
+	MinRung      int           `json:"min_rung"`
+	FeatureID    string        `json:"feature_id"`
+	Tick         uint64        `json:"tick"`
+	NegotiatedAt time.Time     `json:"negotiated_at"`
 }
 
 // Server hosts an MCP-compatible endpoint exposing dashboard lights
@@ -95,6 +154,7 @@ type Server struct {
 	config             config.MCPServerConfig
 	cluster            *lights.Cluster
 	topologyProvider   TopologyProvider
+	specFidelity       func() interface{}
 	pushLogsHandler    PushLogsHandler
 	clusterJoinHandler ClusterJoinHandler
 	middleware         func(http.Handler) http.Handler
@@ -102,12 +162,33 @@ type Server struct {
 	httpClient         *http.Client
 	proxyExecutor      *proxy.Executor
 
+	// tearLedger remembers redeemed tear-sheet nonces so a hop cannot be
+	// replayed within its tick.
+	tearLedger *tearsheet.Ledger
+
 	// Rung validation identity fields — set via SetInstanceIdentity.
 	instanceIsotope string
 	receiptComputer ReceiptComputer
 	receiptVerifier ReceiptVerifier
 
 	securityAlertHandler SecurityAlertHandler
+
+	// streamObserver receives the cost record of each closed edge stream
+	// (GET /mcp). Set via SetStreamObserver; see sse_edge.go.
+	streamObserver StreamObserver
+
+	// trustLevel is the rung assigned when this instance registered with
+	// smoke-alarm. Peers read it during path negotiation.
+	trustLevel int
+
+	// tickSource is the public linear-time tick (default: PublicTick). Exactly
+	// one tick is the lifetime of a path segment.
+	tickSource func() uint64
+	pathSeq    uint64
+
+	// mirrorSink receives metadata-only frames for the backup node. The mirror
+	// never carries request or response bodies.
+	mirrorSink func(mirror.Frame)
 
 	// Metrics API for smoke test scheduler endpoints
 	metricsAPI *metricsapi.API
@@ -122,6 +203,10 @@ type Server struct {
 
 	// Pre-negotiated trust paths, keyed by target isotope name.
 	negotiatedPaths map[string][]*NegotiatedPath
+
+	// routePlans caches the resolved chain per target+feature for a tick, so a
+	// planner asking twice does not re-run the challenge walk.
+	routePlans map[string]routePlan
 }
 
 // NewServer creates an MCP server
@@ -133,8 +218,12 @@ func NewServer(cfg config.MCPServerConfig, cluster *lights.Cluster) *Server {
 			Timeout: 10 * time.Second,
 		},
 		proxyExecutor:   proxy.NewExecutor(),
+		tearLedger:      tearsheet.NewLedger(),
 		clusterPeers:    make(map[string]*clusterPeerInfo),
 		negotiatedPaths: make(map[string][]*NegotiatedPath),
+		routePlans:      make(map[string]routePlan),
+		// The public tick needs no coordinator: it is derived from UTC.
+		tickSource: func() uint64 { return PublicTick(time.Now()) },
 	}
 }
 
@@ -150,6 +239,89 @@ func (s *Server) SetInstanceIdentity(isotope string, computer ReceiptComputer, v
 // SetTopologyProvider sets the callback for topology queries
 func (s *Server) SetTopologyProvider(provider TopologyProvider) {
 	s.topologyProvider = provider
+}
+
+// SetSpecFidelityProvider sets the callback that summarizes per-caller request
+// conformance. It is reported under adhd.status.spec_fidelity.
+func (s *Server) SetSpecFidelityProvider(provider func() interface{}) {
+	s.specFidelity = provider
+}
+
+// SetTrustLevel records the rung assigned at isotope registration so peers can
+// read it during path negotiation.
+func (s *Server) SetTrustLevel(rung int) {
+	s.mu.Lock()
+	s.trustLevel = rung
+	s.mu.Unlock()
+}
+
+// TrustLevel returns the rung assigned at isotope registration.
+func (s *Server) TrustLevel() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.trustLevel
+}
+
+// SetMirrorSink installs the traffic-mirror feed for the backup node. Frames are
+// metadata only: tick, path identity, endpoints and caller.
+func (s *Server) SetMirrorSink(sink func(mirror.Frame)) {
+	s.mu.Lock()
+	s.mirrorSink = sink
+	s.mu.Unlock()
+}
+
+// SetTickSource overrides the public tick source. Passing nil disables tick
+// enforcement (used only by tests that need a timeless path).
+// EnableTearLedger replaces the in-memory tear-sheet ledger with one backed by
+// path. The child of a rotation opens the same path the parent wrote, so a
+// nonce spent before the handoff is still refused after it.
+//
+// A corrupt or unknown-version file is an error rather than a silent empty
+// ledger: replay protection that starts empty looks like protection while
+// providing none.
+func (s *Server) EnableTearLedger(path string) error {
+	ledger, err := tearsheet.OpenLedger(path)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.tearLedger = ledger
+	s.mu.Unlock()
+	return nil
+}
+
+// tearLedgerFor returns the current ledger under the server lock.
+func (s *Server) tearLedgerFor() *tearsheet.Ledger {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tearLedger
+}
+
+func (s *Server) SetTickSource(source func() uint64) {
+	s.mu.Lock()
+	s.tickSource = source
+	s.mu.Unlock()
+}
+
+func (s *Server) mirrorSinkFor() func(mirror.Frame) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.mirrorSink
+}
+
+func (s *Server) nowTick() (uint64, bool) {
+	s.mu.RLock()
+	source := s.tickSource
+	s.mu.RUnlock()
+	if source == nil {
+		return 0, false
+	}
+	return source(), true
+}
+
+// nextPathID assigns the short identifier a caller quotes ("path 88").
+func (s *Server) nextPathID() string {
+	return strconv.FormatUint(atomic.AddUint64(&s.pathSeq, 1), 10)
 }
 
 // SetPushLogsHandler registers the handler for incoming push-logs from prime-plus isotopes
@@ -319,6 +491,9 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 	case "adhd.gh.run":
 		result, respErr = s.handleGHRun(r.Context(), req.Params)
 
+	case "adhd.pr":
+		result, respErr = s.handlePRCache(r.Context(), req.Params)
+
 	case "adhd.dependabot.alerts":
 		result, respErr = s.handleDependabotAlerts(r.Context(), req.Params)
 
@@ -330,6 +505,9 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 
 	case "adhd.path.list":
 		result, respErr = s.handlePathList(req.Params)
+
+	case "adhd.path.call":
+		result, respErr = s.handlePathCall(r.Context(), req.Params)
 
 	case "adhd.proxy":
 		result, respErr = s.handleProxyCall(r.Context(), req.Params)
@@ -386,27 +564,54 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleMCPSSE handles SSE requests
+// handleMCPSSE serves the server→client SSE stream on GET /mcp.
+//
+// It carries server-initiated messages only. The response to a POST /mcp is
+// delivered on that POST's own response — whether as application/json or as a
+// stream — so nothing written here is attributable to a caller's request id,
+// and nothing here is billed to one. The edge record this emits is the cost of
+// the channel, not of any call made through it.
+//
+// The stream is unbuffered and counted; see sse_edge.go for why, and for what
+// the record is for.
 func (s *Server) handleMCPSSE(w http.ResponseWriter, r *http.Request) {
-	// For now, return a simple heartbeat SSE stream
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
 		return
 	}
 
-	// Send initial heartbeat
-	if _, err := fmt.Fprintf(w, "data: {\"type\":\"init\"}\n\n"); err != nil {
-		slog.Warn("write SSE init", "error", err)
-	}
-	flusher.Flush()
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	// Ask intermediaries not to reintroduce the buffer the edge just removed.
+	h.Set("X-Accel-Buffering", "no")
 
-	// Block until context is done
+	edge := newSSEEdge(w, flusher)
+
+	closedBy := ClosedByServerClose
+	defer func() {
+		s.reportStream(edge.record(closedBy, r))
+	}()
+
+	// One frame, so a client that has connected knows it is connected. The
+	// stream then carries nothing until a server-initiated message exists: an
+	// empty idle stream is the correct steady state, not a fault.
+	if err := edge.send("endpoint", map[string]string{"status": "listening"}); err != nil {
+		slog.Warn("write SSE handshake", "error", err)
+		closedBy = ClosedByError
+		return
+	}
+
 	<-r.Context().Done()
+
+	// The request context is done either because the client hung up or because
+	// the server is shutting down. From here the two are indistinguishable, so
+	// the reading is conservative: call it a client abort, which understates
+	// delivered bytes rather than overstating them. When the shutdown path is
+	// wired to this handler it can say so explicitly.
+	closedBy = ClosedByClientAbort
 }
 
 // handleInitialize answers the MCP handshake: it returns the initialize response.
@@ -656,6 +861,34 @@ func (s *Server) handleToolsList() interface{} {
 			},
 		},
 		{
+			"name":        "adhd.pr",
+			"description": "Read a pull request through the local lezz PR cache (view metadata/files/comments or diff). Read-only; the cache endpoint is local config.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"repo": map[string]interface{}{
+						"type":        "string",
+						"description": "Repository slug (owner/name)",
+					},
+					"number": map[string]interface{}{
+						"type":        "integer",
+						"description": "Pull request number",
+						"minimum":     1,
+					},
+					"kind": map[string]interface{}{
+						"type":        "string",
+						"description": "view (metadata, files, comments) or diff (patch)",
+						"enum":        []string{"view", "diff"},
+					},
+					"refresh": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Bypass the cache TTL",
+					},
+				},
+				"required": []string{"repo", "number"},
+			},
+		},
+		{
 			"name":        "adhd.dependabot.alerts",
 			"description": "Fetch Dependabot security alerts for a GitHub repository via the gh CLI.",
 			"inputSchema": map[string]interface{}{
@@ -720,6 +953,25 @@ func (s *Server) handleToolsList() interface{} {
 						"description": "Filter to a specific target (optional)",
 					},
 				},
+			},
+		},
+		{
+			"name":        "adhd.path.call",
+			"description": "Call along a negotiated path segment. The caller must present the segment for the hop it is about to use; a multi-hop route forwards the remaining segments so each hop validates its own token against its own tick. A route executes; it does not grant enumeration (tools/list, resources/list, prompts/list, initialize).",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"segments": map[string]interface{}{
+						"type":        "array",
+						"description": "Base64 path segments, first hop first",
+						"items":       map[string]interface{}{"type": "string"},
+					},
+					"call": map[string]interface{}{
+						"type":        "object",
+						"description": "JSON-RPC call to execute at the final hop",
+					},
+				},
+				"required": []string{"segments", "call"},
 			},
 		},
 		{
@@ -845,6 +1097,8 @@ func (s *Server) handleToolsCall(ctx context.Context, params interface{}) (inter
 		result, errResult = s.handleHurlRun(ctx, toolInput)
 	case "adhd.gh.run":
 		result, errResult = s.handleGHRun(ctx, toolInput)
+	case "adhd.pr":
+		result, errResult = s.handlePRCache(ctx, toolInput)
 	case "adhd.dependabot.alerts":
 		result, errResult = s.handleDependabotAlerts(ctx, toolInput)
 	case "adhd.path.negotiate":
@@ -853,6 +1107,8 @@ func (s *Server) handleToolsCall(ctx context.Context, params interface{}) (inter
 		result, errResult = s.handlePathVerify(ctx, toolInput)
 	case "adhd.path.list":
 		result, errResult = s.handlePathList(toolInput)
+	case "adhd.path.call":
+		result, errResult = s.handlePathCall(ctx, toolInput)
 	case "adhd.proxy":
 		result, errResult = s.handleProxyCall(ctx, toolInput)
 	default:
@@ -955,6 +1211,10 @@ func (s *Server) handleStatus() interface{} {
 	if s.instanceIsotope != "" {
 		out["isotope"] = s.instanceIsotope
 	}
+	if s.specFidelity != nil {
+		out["spec_fidelity"] = s.specFidelity()
+	}
+	out["tick"] = PublicTick(time.Now())
 
 	return out
 }
@@ -1015,17 +1275,21 @@ func (s *Server) handleLightsGet(params interface{}) (interface{}, *jsonrpcError
 func (s *Server) handleIsotopeStatus() interface{} {
 	if s.topologyProvider == nil {
 		return map[string]interface{}{
-			"name":   "adhd",
-			"role":   "standalone",
-			"status": "ready",
+			"name":       "adhd",
+			"role":       "standalone",
+			"status":     "ready",
+			"trust_rung": s.TrustLevel(),
+			"tick":       PublicTick(time.Now()),
 		}
 	}
 
 	topology := s.topologyProvider()
 	return map[string]interface{}{
-		"name":   topology["local_name"],
-		"role":   topology["local_role"],
-		"status": "ready",
+		"name":       topology["local_name"],
+		"role":       topology["local_role"],
+		"status":     "ready",
+		"trust_rung": s.TrustLevel(),
+		"tick":       PublicTick(time.Now()),
 	}
 }
 
@@ -1155,12 +1419,22 @@ func (s *Server) handleRungChallenge(ctx context.Context, params interface{}) (i
 		peerIsotope, _ = isoResult["isotope"].(string)
 	}
 
+	// The challenged instance's own trust rung. Without it a negotiated path
+	// always carries min_rung 0, and path ranking is a no-op.
+	peerRung := 0
+	if status, sErr := s.callPeerMCP(ctx, targetURL, "adhd.isotope.status", nil); sErr == nil {
+		if r, ok := status["trust_rung"].(float64); ok {
+			peerRung = int(r)
+		}
+	}
+
 	return map[string]interface{}{
 		"verified":     verified,
 		"receipt":      receipt,
 		"feature_id":   featureID,
 		"nonce":        nonce,
 		"peer_isotope": peerIsotope,
+		"rung":         peerRung,
 	}, nil
 }
 
@@ -1225,8 +1499,12 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 				pjName, _ := pjMap["name"].(string)
 				pjRepo, _ := pjMap["repo"].(string)
 				pjMCP, _ := pjMap["mcp_url"].(string)
+				pjID, _ := pjMap["id"].(string)
+				if pjID == "" {
+					pjID = pjName
+				}
 				if pjName != "" && pjMCP != "" {
-					s.registerProjectTool(p["name"], pjName, pjRepo, pjMCP)
+					s.registerProjectToolID(p["name"], pjID, pjName, pjRepo, pjMCP)
 					projectCount++
 				}
 			}
@@ -1368,6 +1646,10 @@ func (s *Server) handleGHRun(ctx context.Context, params interface{}) (interface
 	timeoutSec := 30
 	if ts, ok := m["timeout_seconds"].(float64); ok && ts > 0 {
 		timeoutSec = int(ts)
+	}
+
+	if q := ghQueueURL(); q != "" {
+		return s.runGHViaQueue(ctx, q, args, timeoutSec)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
@@ -1597,6 +1879,16 @@ func (s *Server) handlePathNegotiate(ctx context.Context, params interface{}) (i
 		return nil, &jsonrpcError{Code: -32602, Message: "feature_id is required"}
 	}
 
+	// Default discovery depth is four hops. A caller that knows a deeper map can
+	// ask for it; routing itself has no depth cap.
+	maxHops := 4
+	if v, ok := m["max_hops"].(float64); ok && int(v) > 0 {
+		maxHops = int(v)
+	}
+	if maxHops > 16 {
+		maxHops = 16
+	}
+
 	s.mu.RLock()
 	peers := make(map[string]*clusterPeerInfo, len(s.clusterPeers))
 	for k, v := range s.clusterPeers {
@@ -1622,114 +1914,14 @@ func (s *Server) handlePathNegotiate(ctx context.Context, params interface{}) (i
 		}
 	}
 
-	var paths []*NegotiatedPath
+	paths := s.discoverRoutes(ctx, peers, targetIsotope, featureID, maxHops)
 
-	for _, peer := range peers {
-		if peer.Endpoint == "" {
-			continue
-		}
-
-		if peer.Name == targetIsotope {
-			// Direct 1-hop path: challenge the target peer directly.
-			nonce := generateNonce()
-			res, err := s.callPeerMCP(ctx, peer.Endpoint, "adhd.rung.challenge", map[string]interface{}{
-				"target.url": peer.Endpoint,
-				"feature_id": featureID,
-				"nonce":      nonce,
-			})
-			if err != nil {
-				slog.Debug("path negotiate: direct challenge failed", "peer", peer.Name, "error", err)
-				s.fireSecurity("warn", "rung_challenge_failed", map[string]interface{}{
-					"peer":       peer.Name,
-					"endpoint":   peer.Endpoint,
-					"feature_id": featureID,
-					"error":      err.Error(),
-				})
-				continue
-			}
-			verified, _ := res["verified"].(bool)
-			if !verified {
-				s.fireSecurity("warn", "rung_challenge_failed", map[string]interface{}{
-					"peer":       peer.Name,
-					"endpoint":   peer.Endpoint,
-					"feature_id": featureID,
-					"reason":     "verified=false",
-				})
-				continue
-			}
-			receipt, _ := res["receipt"].(string)
-			rung := peerRungFromResult(res)
-			paths = append(paths, &NegotiatedPath{
-				Target:    targetIsotope,
-				FeatureID: featureID,
-				Hops: []PathHop{{
-					Isotope:  peer.Name,
-					Endpoint: peer.Endpoint,
-					Rung:     rung,
-					Nonce:    nonce,
-					Receipt:  receipt,
-				}},
-				MinRung:      rung,
-				NegotiatedAt: time.Now(),
-			})
-			continue
-		}
-
-		// 2-hop path: ask this intermediary peer for its own peer list,
-		// then challenge it as hop-1 and ask it to challenge the target as hop-2.
-		interPeers, err := s.callPeerMCP(ctx, peer.Endpoint, "adhd.isotope.peers", nil)
-		if err != nil {
-			continue
-		}
-		targetEndpoint := findEndpointInPeers(interPeers, targetIsotope)
-		if targetEndpoint == "" {
-			continue
-		}
-
-		// Challenge hop-1 (the intermediary).
-		nonce1 := generateNonce()
-		res1, err := s.callPeerMCP(ctx, peer.Endpoint, "adhd.rung.challenge", map[string]interface{}{
-			"target.url": peer.Endpoint,
-			"feature_id": featureID,
-			"nonce":      nonce1,
-		})
-		if err != nil || !isVerified(res1) {
-			continue
-		}
-
-		// Ask hop-1 to challenge hop-2 (the target) on our behalf.
-		nonce2 := generateNonce()
-		res2, err := s.callPeerMCP(ctx, peer.Endpoint, "adhd.rung.challenge", map[string]interface{}{
-			"target.url": targetEndpoint,
-			"feature_id": featureID,
-			"nonce":      nonce2,
-		})
-		if err != nil || !isVerified(res2) {
-			continue
-		}
-
-		rung1 := peerRungFromResult(res1)
-		rung2 := peerRungFromResult(res2)
-		minRung := rung1
-		if rung2 < minRung {
-			minRung = rung2
-		}
-
-		paths = append(paths, &NegotiatedPath{
-			Target:    targetIsotope,
-			FeatureID: featureID,
-			Hops: []PathHop{
-				{Isotope: peer.Name, Endpoint: peer.Endpoint, Rung: rung1, Nonce: nonce1, Receipt: safeReceipt(res1)},
-				{Isotope: targetIsotope, Endpoint: targetEndpoint, Rung: rung2, Nonce: nonce2, Receipt: safeReceipt(res2)},
-			},
-			MinRung:      minRung,
-			NegotiatedAt: time.Now(),
-		})
-	}
-
-	// Sort by min_rung descending (highest trust first).
+	// Highest trust first; at equal trust, prefer the shorter route.
 	sort.Slice(paths, func(i, j int) bool {
-		return paths[i].MinRung > paths[j].MinRung
+		if paths[i].MinRung != paths[j].MinRung {
+			return paths[i].MinRung > paths[j].MinRung
+		}
+		return len(paths[i].Hops) < len(paths[j].Hops)
 	})
 
 	// Store for later retrieval and verification.
@@ -1741,11 +1933,18 @@ func (s *Server) handlePathNegotiate(ctx context.Context, params interface{}) (i
 	result := make([]interface{}, 0, len(paths))
 	for _, p := range paths {
 		data, _ := json.Marshal(p)
+		encodedSegments := make([]string, 0, len(p.Segments))
+		for i := range p.Segments {
+			segData, _ := json.Marshal(p.Segments[i])
+			encodedSegments = append(encodedSegments, base64.StdEncoding.EncodeToString(segData))
+		}
 		result = append(result, map[string]interface{}{
 			"target":        p.Target,
 			"min_rung":      p.MinRung,
 			"hops":          len(p.Hops),
 			"feature_id":    p.FeatureID,
+			"tick":          p.Tick,
+			"segments":      encodedSegments,
 			"negotiated_at": p.NegotiatedAt,
 			"token":         base64.StdEncoding.EncodeToString(data),
 		})
@@ -1766,6 +1965,165 @@ func (s *Server) handlePathNegotiate(ctx context.Context, params interface{}) (i
 		"paths_found": len(paths),
 		"paths":       result,
 	}, nil
+}
+
+// handlePathCall executes a call along one hop of a negotiated path.
+//
+// The caller must present the segment for the hop it is about to use. A
+// multi-hop route forwards the remaining segments to the next hop, so every hop
+// validates its own token against its own tick: holding only the first segment
+// gets a caller to the midpoint and no further. The same segment can be used by
+// any holder during its tick — paths are reusable within a tick, unlike a
+// single-use skill.
+func (s *Server) handlePathCall(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
+	m, ok := params.(map[string]interface{})
+	if !ok {
+		return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
+	}
+	call, _ := m["call"].(map[string]interface{})
+	if len(call) == 0 {
+		return nil, &jsonrpcError{Code: -32602, Message: "call is required and must be an object"}
+	}
+	segments, err := decodeSegments(m)
+	if err != nil {
+		return nil, &jsonrpcError{Code: -32602, Message: err.Error()}
+	}
+
+	// Every segment is a self-contained hop. The caller supplies as much of the
+	// map as it knows: one segment routes one hop, eight route eight. There is no
+	// server-side route length to satisfy.
+	segment := segments[0]
+	now, ticked := s.nowTick()
+	if ticked && !tickWithinGrace(segment.Tick, now) {
+		s.fireSecurity("warn", "path_stale", map[string]interface{}{
+			"path": segment.ID,
+			"tick": segment.Tick,
+			"now":  now,
+		})
+		return nil, &jsonrpcError{
+			Code:    -32010,
+			Message: fmt.Sprintf("path %s expired: negotiated for tick %d, now %d (grace %d tick)", segment.ID, segment.Tick, now, PathGraceTicks),
+		}
+	}
+
+	if method, _ := call["method"].(string); pathDeniedMethods[method] {
+		s.fireSecurity("warn", "path_scope", map[string]interface{}{
+			"path":   segment.ID,
+			"method": method,
+		})
+		return nil, &jsonrpcError{
+			Code:    -32011,
+			Message: fmt.Sprintf("path %s does not grant %s: routes execute, they do not enumerate", segment.ID, method),
+		}
+	}
+
+	if sink := s.mirrorSinkFor(); sink != nil {
+		caller, _ := ctx.Value(callerIPKey{}).(string)
+		var usedTick uint64
+		if ticked {
+			usedTick = now
+		}
+		sink(mirror.Frame{
+			Tick:     segment.Tick,
+			UsedTick: usedTick,
+			Kind:     "path.hop",
+			Path:     segment.ID,
+			From:     segment.From,
+			To:       segment.To,
+			Feature:  segment.FeatureID,
+			Caller:   caller,
+			At:       time.Now().UTC(),
+		})
+	}
+
+	var forward map[string]interface{}
+	if len(segments) > 1 {
+		forward = map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "adhd.path.call",
+			"params": map[string]interface{}{
+				"segments": encodeSegments(segments[1:]),
+				"call":     call,
+			},
+		}
+	} else {
+		if call["jsonrpc"] == nil {
+			call["jsonrpc"] = "2.0"
+		}
+		if call["id"] == nil {
+			call["id"] = 1
+		}
+		forward = call
+	}
+
+	resp, execErr := s.proxyExecutor.ExecuteProxy(ctx, proxy.ProxyRequest{
+		TargetEndpoint: segment.To,
+		Call:           forward,
+	})
+	if execErr != nil {
+		return nil, &jsonrpcError{Code: -32603, Message: execErr.Error()}
+	}
+	if resp.Error != nil {
+		return nil, &jsonrpcError{Code: resp.Error.Code, Message: resp.Error.Message}
+	}
+	// A refusal at a later hop arrives inside the nested JSON-RPC response.
+	if nested, ok := resp.Result.(map[string]interface{}); ok {
+		if errObj, ok := nested["error"].(map[string]interface{}); ok {
+			code, _ := errObj["code"].(float64)
+			message, _ := errObj["message"].(string)
+			return nil, &jsonrpcError{Code: int(code), Message: message}
+		}
+	}
+	return resp.Result, nil
+}
+
+func decodeSegments(m map[string]interface{}) ([]PathSegment, error) {
+	var encoded []string
+	switch v := m["segments"].(type) {
+	case []interface{}:
+		for _, entry := range v {
+			if str, ok := entry.(string); ok && str != "" {
+				encoded = append(encoded, str)
+			}
+		}
+	case []string:
+		encoded = v
+	}
+	if len(encoded) == 0 {
+		if single, ok := m["path"].(string); ok && single != "" {
+			encoded = []string{single}
+		}
+	}
+	if len(encoded) == 0 {
+		return nil, fmt.Errorf("segments is required")
+	}
+
+	out := make([]PathSegment, 0, len(encoded))
+	for _, enc := range encoded {
+		raw, err := base64.StdEncoding.DecodeString(enc)
+		if err != nil {
+			return nil, fmt.Errorf("segment: %w", err)
+		}
+		var segment PathSegment
+		if err := json.Unmarshal(raw, &segment); err != nil {
+			return nil, fmt.Errorf("segment: %w", err)
+		}
+		if segment.To == "" {
+			return nil, fmt.Errorf("segment %s has no endpoint", segment.ID)
+		}
+		out = append(out, segment)
+	}
+	return out, nil
+}
+
+func encodeSegments(segments []PathSegment) []string {
+	out := make([]string, 0, len(segments))
+	for i := range segments {
+		data, _ := json.Marshal(segments[i])
+		out = append(out, base64.StdEncoding.EncodeToString(data))
+	}
+	return out
 }
 
 // handlePathVerify re-challenges each hop of all stored paths to the target,
@@ -1796,9 +2154,29 @@ func (s *Server) handlePathVerify(ctx context.Context, params interface{}) (inte
 		}, nil
 	}
 
+	now, ticked := s.nowTick()
 	results := make([]interface{}, 0, len(paths))
 	for _, path := range paths {
 		allValid := true
+		if ticked && !tickWithinGrace(path.Tick, now) {
+			// Verification does not renew a path. A token older than the grace
+			// window is stale and stays stale.
+			s.fireSecurity("warn", "path_stale", map[string]interface{}{
+				"target": path.Target,
+				"tick":   path.Tick,
+				"now":    now,
+			})
+			results = append(results, map[string]interface{}{
+				"target":   path.Target,
+				"min_rung": path.MinRung,
+				"valid":    false,
+				"reason":   "stale_tick",
+				"tick":     path.Tick,
+				"now":      now,
+				"hops":     []interface{}{},
+			})
+			continue
+		}
 		hopResults := make([]interface{}, 0, len(path.Hops))
 		for _, hop := range path.Hops {
 			nonce := generateNonce()
@@ -1862,6 +2240,195 @@ func (s *Server) handlePathList(params interface{}) (interface{}, *jsonrpcError)
 }
 
 // peerRungFromResult extracts a trust rung from a callPeerMCP result if present.
+// buildSegments turns a hop list into per-hop capability tokens, each stamped
+// with the tick it is valid for. A caller must hold every segment to traverse a
+// multi-hop route.
+func (s *Server) buildSegments(hops []PathHop, feature string, tick uint64) []PathSegment {
+	segments := make([]PathSegment, 0, len(hops))
+	from := "self"
+	for _, hop := range hops {
+		segments = append(segments, PathSegment{
+			ID:        s.nextPathID(),
+			From:      from,
+			To:        hop.Endpoint,
+			FeatureID: feature,
+			Tick:      tick,
+			Rung:      hop.Rung,
+			Nonce:     hop.Nonce,
+			Receipt:   hop.Receipt,
+		})
+		from = hop.Isotope
+	}
+	return segments
+}
+
+// routeNode is one discovered endpoint in the peer graph.
+type routeNode struct {
+	Name     string
+	Endpoint string
+}
+
+// discoverRoutes walks the peer graph up to maxHops and verifies every route it
+// finds. The default depth is four; routing itself has no cap, so a caller that
+// holds a deeper map can ask for it.
+func (s *Server) discoverRoutes(ctx context.Context, seeds map[string]*clusterPeerInfo, target, feature string, maxHops int) []*NegotiatedPath {
+	endpoints := make(map[string]string, len(seeds))
+	adj := make(map[string][]routeNode, len(seeds)+1)
+	for name, peer := range seeds {
+		if name == "" || peer == nil || peer.Endpoint == "" {
+			continue
+		}
+		endpoints[name] = peer.Endpoint
+		adj["self"] = append(adj["self"], routeNode{Name: name, Endpoint: peer.Endpoint})
+	}
+
+	// Breadth-first expansion. Depth 1 is the local peer list; each later depth
+	// asks the previous hop for its peers, which is also the voucher for the
+	// challenge at that hop.
+	frontier := make([]string, 0, len(seeds))
+	for _, edge := range adj["self"] {
+		frontier = append(frontier, edge.Name)
+	}
+	visited := map[string]bool{"self": true}
+	for depth := 1; depth < maxHops && len(frontier) > 0; depth++ {
+		next := make([]string, 0, len(frontier))
+		for _, name := range frontier {
+			if visited[name] {
+				continue
+			}
+			visited[name] = true
+			endpoint := endpoints[name]
+			if endpoint == "" {
+				continue
+			}
+			topology, err := s.callPeerMCP(ctx, endpoint, "adhd.isotope.peers", nil)
+			if err != nil {
+				continue
+			}
+			for _, edge := range peersFromTopology(topology) {
+				if edge.Name == "" || edge.Endpoint == "" || visited[edge.Name] {
+					continue
+				}
+				endpoints[edge.Name] = edge.Endpoint
+				adj[name] = append(adj[name], edge)
+				next = append(next, edge.Name)
+			}
+		}
+		frontier = next
+	}
+
+	var routes [][]string
+	var walk func(path []string)
+	walk = func(path []string) {
+		if len(routes) >= 32 {
+			return
+		}
+		last := path[len(path)-1]
+		if last == target {
+			routes = append(routes, append([]string(nil), path...))
+			return
+		}
+		if len(path)-1 >= maxHops {
+			return
+		}
+		for _, edge := range adj[last] {
+			if containsName(path, edge.Name) {
+				continue
+			}
+			walk(append(path, edge.Name))
+		}
+	}
+	walk([]string{"self"})
+
+	seen := map[string]bool{}
+	out := make([]*NegotiatedPath, 0, len(routes))
+	for _, route := range routes {
+		key := strings.Join(route, ">")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		hops, ok := s.challengeRoute(ctx, route, endpoints, feature)
+		if !ok {
+			continue
+		}
+		minRung := hops[0].Rung
+		for _, hop := range hops[1:] {
+			if hop.Rung < minRung {
+				minRung = hop.Rung
+			}
+		}
+		tick, _ := s.nowTick()
+		out = append(out, &NegotiatedPath{
+			Target:       target,
+			FeatureID:    feature,
+			Hops:         hops,
+			Segments:     s.buildSegments(hops, feature, tick),
+			MinRung:      minRung,
+			Tick:         tick,
+			NegotiatedAt: time.Now(),
+		})
+	}
+	return out
+}
+
+// challengeRoute verifies each hop: the first hop challenges itself, and every
+// later hop is challenged by the hop before it.
+func (s *Server) challengeRoute(ctx context.Context, route []string, endpoints map[string]string, feature string) ([]PathHop, bool) {
+	hops := make([]PathHop, 0, len(route)-1)
+	for i, name := range route[1:] {
+		endpoint := endpoints[name]
+		if endpoint == "" {
+			return nil, false
+		}
+		challenger := endpoint
+		if i > 0 {
+			challenger = endpoints[route[i]]
+		}
+		nonce := generateNonce()
+		res, err := s.callPeerMCP(ctx, challenger, "adhd.rung.challenge", map[string]interface{}{
+			"target.url": endpoint,
+			"feature_id": feature,
+			"nonce":      nonce,
+		})
+		if err != nil || !isVerified(res) {
+			return nil, false
+		}
+		hops = append(hops, PathHop{
+			Isotope:  name,
+			Endpoint: endpoint,
+			Rung:     peerRungFromResult(res),
+			Nonce:    nonce,
+			Receipt:  safeReceipt(res),
+		})
+	}
+	return hops, len(hops) > 0
+}
+
+func peersFromTopology(topology map[string]interface{}) []routeNode {
+	peers, _ := topology["peers"].([]interface{})
+	out := make([]routeNode, 0, len(peers))
+	for _, entry := range peers {
+		peer, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := peer["name"].(string)
+		endpoint, _ := peer["endpoint"].(string)
+		out = append(out, routeNode{Name: name, Endpoint: endpoint})
+	}
+	return out
+}
+
+func containsName(path []string, name string) bool {
+	for _, entry := range path {
+		if entry == name {
+			return true
+		}
+	}
+	return false
+}
+
 func peerRungFromResult(res map[string]interface{}) int {
 	if r, ok := res["rung"].(float64); ok {
 		return int(r)
@@ -1975,8 +2542,21 @@ func (s *Server) resolveTargetViaDiscovery(ctx context.Context, targetIsotope st
 // registerProjectTool registers an adhd.project.<name>.call dynamic tool that
 // proxies arbitrary JSON-RPC calls to the project's own MCP server.
 // Duplicate registrations (same tool name) are silently ignored.
+// registerProjectTool is the legacy entry point: the project name is the id.
+// New joins should pass a stable seed id so two projects with the same display
+// name do not collide (#40).
 func (s *Server) registerProjectTool(clusterName, projectName, repo, mcpURL string) {
-	toolName := "adhd.project." + projectName + ".call"
+	s.registerProjectToolID(clusterName, projectName, projectName, repo, mcpURL)
+}
+
+// registerProjectToolID namespaces the dynamic tool by the project id, not the
+// display name. The name remains in the description.
+func (s *Server) registerProjectToolID(clusterName, projectID, projectName, repo, mcpURL string) {
+	projectID = sanitizeProjectID(projectID, projectName)
+	if projectName == "" {
+		projectName = projectID
+	}
+	toolName := "adhd.project." + projectID + ".call"
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2028,7 +2608,32 @@ func (s *Server) registerProjectTool(clusterName, projectName, repo, mcpURL stri
 			return result, nil
 		},
 	})
-	slog.Info("registered per-project proxy tool", "tool", toolName, "mcp_url", mcpURL, "cluster", clusterName)
+	slog.Info("registered per-project proxy tool", "tool", toolName, "project", projectName, "mcp_url", mcpURL, "cluster", clusterName)
+}
+
+// sanitizeProjectID keeps the dynamic tool name addressable. A seed id is
+// expected to be a slug/ULID; anything else is reduced, and an empty result
+// falls back to the display name.
+func sanitizeProjectID(id, name string) string {
+	clean := func(v string) string {
+		var b strings.Builder
+		for _, r := range v {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.', r == '-':
+				b.WriteRune(r)
+			default:
+				b.WriteRune('-')
+			}
+		}
+		return strings.Trim(b.String(), "-")
+	}
+	if v := clean(id); v != "" {
+		return v
+	}
+	if v := clean(name); v != "" {
+		return v
+	}
+	return "project"
 }
 
 // callPeerMCP sends a single JSON-RPC call to a peer MCP server and returns

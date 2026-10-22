@@ -123,8 +123,8 @@ func TestFireMarshalToolsListADHD(t *testing.T) {
 	}
 
 	// Verify ADHD tools
-	if len(tools) != 18 {
-		t.Errorf("expected 18 tools, got %d", len(tools))
+	if len(tools) != 20 {
+		t.Errorf("expected 20 tools, got %d", len(tools))
 		return
 	}
 
