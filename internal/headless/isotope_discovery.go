@@ -1,6 +1,7 @@
 package headless
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -163,7 +164,8 @@ func AutoDiscoverPrime(ctx context.Context, smokeAlarmURL string) (string, error
 
 // RegisterIsotopeWithRole registers this instance via smoke-alarm's REST
 // /isotope/register endpoint and returns the assigned trust rung (0 if
-// registration fails).
+// registration fails). It sends no project identity; callers that have one use
+// RegisterIsotopeWithReferences.
 //
 // name is the instance label, not the product name: smoke-alarm keys its isotope
 // registry by name, so a constant ("adhd") makes a second instance overwrite the
@@ -176,14 +178,14 @@ func RegisterIsotopeWithRole(ctx context.Context, smokeAlarmURL string, role Iso
 		return 0, errors.New("isotope registration name is required: a constant name lets two instances overwrite each other in the smoke-alarm registry (adhd#48)")
 	}
 
-	record, err := isotope.NewClient(smokeAlarmURL).Register(ctx, isotope.Registration{
+	record, err := RegisterIsotopeWithReferences(ctx, smokeAlarmURL, isotope.Registration{
 		Name:     name,
 		Role:     string(role),
 		Endpoint: localAddr,
 		Protocol: "mcp",
-	})
+	}, isotopeReferences{})
 	if err != nil {
-		return 0, fmt.Errorf("registration failed: %w", err)
+		return 0, err
 	}
 
 	slog.Info("registered as isotope",
@@ -195,6 +197,44 @@ func RegisterIsotopeWithRole(ctx context.Context, smokeAlarmURL string, role Iso
 	)
 
 	return record.TrustRung, nil
+}
+
+// RegisterIsotopeWithReferences POSTs the shared registration plus this
+// project's route and dependency pins. The registry keys by name, but a
+// dependent resolves by route; the contract pins the spec that dependency was
+// built against (smoke-alarm#35).
+func RegisterIsotopeWithReferences(ctx context.Context, smokeAlarmURL string, reg isotope.Registration, refs isotopeReferences) (*isotope.Record, error) {
+	body, err := json.Marshal(struct {
+		isotope.Registration
+		isotopeReferences
+	}{reg, refs})
+	if err != nil {
+		return nil, fmt.Errorf("registration failed: marshal: %w", err)
+	}
+
+	endpoint := strings.TrimRight(smokeAlarmURL, "/") + "/isotope/register"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("registration failed: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req) //nolint:gosec // G704: the registry is the configured smoke-alarm endpoint
+	if err != nil {
+		return nil, fmt.Errorf("registration failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("registration failed: status %d", resp.StatusCode)
+	}
+
+	var record isotope.Record
+	if err := json.NewDecoder(resp.Body).Decode(&record); err != nil {
+		return nil, fmt.Errorf("registration failed: decode response: %w", err)
+	}
+	return &record, nil
 }
 
 // ServeIsotopeHeartbeat renews this instance's registration until ctx is
@@ -222,13 +262,13 @@ func (s *Server) ServeIsotopeHeartbeat(ctx context.Context, smokeAlarmURL string
 	}
 }
 
-// renewIsotopeRegistration re-registers the same instance label and endpoint.
-// The registry keeps the rung it already assigned to an unchanged endpoint, so
-// a renewal does not re-run the trust probe. ctx bounds the request, so
-// cancellation cannot leave a beat in flight after shutdown.
+// renewIsotopeRegistration re-registers the same instance label and endpoint,
+// with the same project identity. The registry keeps the rung it already
+// assigned to an unchanged endpoint, so a renewal does not re-run the trust
+// probe. ctx bounds the request, so cancellation cannot leave a beat in flight
+// after shutdown.
 func (s *Server) renewIsotopeRegistration(ctx context.Context, smokeAlarmURL string) error {
-	rung, err := RegisterIsotopeWithRole(
-		ctx, smokeAlarmURL, s.registrationRole(), s.cfg.MCPServer.Addr, s.instanceLabel())
+	rung, err := s.registerWithIdentity(ctx, smokeAlarmURL, s.registrationRole(), s.instanceLabel(), s.cfg.MCPServer.Addr)
 	if err != nil {
 		return err
 	}
@@ -248,6 +288,21 @@ func (s *Server) registrationRole() IsotopeRole {
 		return RolePrime
 	}
 	return s.role
+}
+
+// registerWithIdentity registers this instance with its project route and the
+// dependencies it pins, and returns the registry's trust rung.
+func (s *Server) registerWithIdentity(ctx context.Context, smokeAlarmURL string, role IsotopeRole, name, addr string) (int, error) {
+	record, err := RegisterIsotopeWithReferences(ctx, smokeAlarmURL, isotope.Registration{
+		Name:     name,
+		Role:     string(role),
+		Endpoint: addr,
+		Protocol: "mcp",
+	}, s.isotopeReferences())
+	if err != nil {
+		return 0, err
+	}
+	return record.TrustRung, nil
 }
 
 // DeregisterIsotope removes this instance's registry entry. It is best-effort:
