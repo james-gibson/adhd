@@ -17,6 +17,35 @@ archives:
   - id: default
     formats:
       - tar.gz
+# macOS code signing and notarization via quill. GoReleaser vendors quill and
+# filters this pipe to darwin binaries, so the linux target is untouched, and
+# the signature is applied to the build artifact before it is archived — the
+# copies inside the .tar.gz carry it too.
+#
+# `enabled` is gated on the signing secret so snapshot builds and forks without
+# credentials still produce (unsigned) binaries instead of failing. The release
+# workflow asserts MACOS_SIGN_P12 is set before a tag release for the same
+# reason in reverse: without that check a missing secret would silently publish
+# unsigned binaries with a green check.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids: [adhd]
+      sign:
+        # base64 of a Developer ID Application .p12 with the full Apple
+        # certificate chain attached (`quill p12 attach-chain`).
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        # Signing alone still leaves Gatekeeper warning on first run. These
+        # three App Store Connect API key values add the notarization ticket.
+        # envOrDefault, not .Env: .Env is rendered with missingkey=error, so an
+        # unset secret would fail the release instead of skipping notarization.
+        # Empty values make GoReleaser sign and log that it did not notarize.
+        key: '{{ envOrDefault "MACOS_NOTARY_KEY" "" }}'
+        key_id: '{{ envOrDefault "MACOS_NOTARY_KEY_ID" "" }}'
+        issuer_id: '{{ envOrDefault "MACOS_NOTARY_ISSUER_ID" "" }}'
+        wait: true
 checksum:
   name_template: checksums.txt
 release:
