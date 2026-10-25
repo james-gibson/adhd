@@ -20,7 +20,7 @@ discovered_clusters:
   - name: demo-001
     adhd_mcp: http://127.0.0.1:9100/mcp
     projects:
-      - route: 01JABCDEF
+      - id: 01JABCDEF
         name: tuner
         repo: james-gibson/tuner
         mcp_url: http://127.0.0.1:9200/mcp
@@ -45,10 +45,10 @@ discovered_clusters:
 	if len(dc.Projects) != 2 {
 		t.Fatalf("projects = %+v, want 2", dc.Projects)
 	}
-	if dc.Projects[0].Route != "01JABCDEF" || dc.Projects[0].MCPURL != "http://127.0.0.1:9200/mcp" {
+	if dc.Projects[0].ID != "01JABCDEF" || dc.Projects[0].MCPURL != "http://127.0.0.1:9200/mcp" {
 		t.Errorf("project identity lost: %+v", dc.Projects[0])
 	}
-	if dc.Projects[1].Route != "" {
-		t.Errorf("absent route should stay empty, got %q", dc.Projects[1].Route)
+	if dc.Projects[1].ID != "" {
+		t.Errorf("absent id should stay empty, got %q", dc.Projects[1].ID)
 	}
 }

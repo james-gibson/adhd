@@ -70,22 +70,14 @@ func RegistryURLForAlarm(alarmURL string) string {
 }
 
 // ProjectEntry describes a project within a cluster that exposes an MCP server.
+// ID is the seed id: the stable project identity shared by everyone working on
+// the project, and the value that namespaces adhd.project.<id>.call. It is not
+// a route — a route rotates.
 type ProjectEntry struct {
-	Route  string `json:"route,omitempty"` // routing id (ADR lezz.go 0003)
-	ID     string `json:"id,omitempty"`    // legacy alias for route, still published by lezz demo
-	Name   string `json:"name"`            // short name, e.g. "tuner", "adhd"
-	Repo   string `json:"repo"`            // GitHub slug, e.g. "james-gibson/tuner"
-	MCPURL string `json:"mcp_url"`         // base URL of the project's MCP server
-}
-
-// routingID returns the project's route, preferring the current field and
-// falling back to the legacy id alias lezz demo still publishes. An empty
-// result means the tool is namespaced by the display name instead.
-func (p ProjectEntry) routingID() string {
-	if p.Route != "" {
-		return p.Route
-	}
-	return p.ID
+	ID     string `json:"id,omitempty"` // stable seed id; namespaces the tool
+	Name   string `json:"name"`         // short name, e.g. "tuner", "adhd"
+	Repo   string `json:"repo"`         // GitHub slug, e.g. "james-gibson/tuner"
+	MCPURL string `json:"mcp_url"`      // base URL of the project's MCP server
 }
 
 // ClusterInfo mirrors the JSON published by lezz demo's /cluster endpoint.
@@ -276,11 +268,11 @@ func loopbackHost(base string) string {
 func DiscoveredCluster(c ClusterInfo) config.DiscoveredCluster {
 	dc := config.DiscoveredCluster{Name: c.Name, AdhdMCP: c.AdhdMCP}
 	for _, p := range c.Projects {
-		// The route is kept exactly as published. An absent one is not filled in
-		// here: the server treats a missing route as a display-name fallback,
+		// The seed id is kept exactly as published. An absent one is not filled
+		// in here: the server treats a missing id as a display-name fallback,
 		// which must not be allowed to replace another project's tool.
 		dc.Projects = append(dc.Projects, config.ClusterProject{
-			Route:  p.routingID(),
+			ID:     p.ID,
 			Name:   p.Name,
 			Repo:   p.Repo,
 			MCPURL: p.MCPURL,

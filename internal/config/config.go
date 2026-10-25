@@ -20,7 +20,7 @@ type Config struct {
 	// found by `adhd --demo`: their adhd_mcp endpoints and projects. Their alarm
 	// endpoints are expanded into SmokeAlarm, which is the shape the watcher
 	// consumes; the MCP identity has no other representation, so dropping it
-	// silently drops the clusters' adhd.project.<route>.call proxy tools.
+	// silently drops the clusters' adhd.project.<id>.call proxy tools.
 	DiscoveredClusters []DiscoveredCluster `yaml:"discovered_clusters,omitempty"`
 }
 
@@ -34,9 +34,9 @@ type DiscoveredCluster struct {
 }
 
 // ClusterProject is a project inside a discovered cluster that exposes its own
-// MCP server. Each one becomes an adhd.project.<route>.call proxy tool.
+// MCP server. Each one becomes an adhd.project.<id>.call proxy tool.
 type ClusterProject struct {
-	Route  string `yaml:"route,omitempty"` // routing id; namespaces the tool (ADR lezz.go 0003)
+	ID     string `yaml:"id,omitempty"` // stable seed id; namespaces the tool
 	Name   string `yaml:"name"`
 	Repo   string `yaml:"repo,omitempty"`
 	MCPURL string `yaml:"mcp_url"`
