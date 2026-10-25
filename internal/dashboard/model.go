@@ -76,6 +76,7 @@ func NewWithConfig(cfg *config.Config) *Dashboard {
 	var mcpServer *mcpserver.Server
 	if cfg.MCPServer.Enabled {
 		mcpServer = mcpserver.NewServer(cfg.MCPServer, c)
+		mcpServer.RegisterDiscoveredClusters(cfg.DiscoveredClusters)
 		slog.Info("MCP server configured", "addr", cfg.MCPServer.Addr)
 	}
 

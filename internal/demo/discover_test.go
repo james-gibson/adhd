@@ -2,6 +2,7 @@ package demo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -223,6 +224,109 @@ func TestAlarmLiveFallsBackToLoopback(t *testing.T) {
 	advertised := "http://192.0.2.10:" + port
 	if !hasLiveAlarm(context.Background(), []ClusterInfo{{Name: "c", AlarmA: advertised}}) {
 		t.Fatalf("alarm advertised as %s should be found via loopback", advertised)
+	}
+}
+
+// TestRegistryProjectIDIsParsed covers the published registry contract: lezz
+// writes projects[].id — the seed id that namespaces the proxy tool — so the
+// mirrored ProjectEntry must carry it. Without the field the id is silently
+// dropped and every project is namespaced by its display name.
+func TestRegistryProjectIDIsParsed(t *testing.T) {
+	const body = `{"name":"demo-001","projects":[{"id":"01JABCDEF","name":"tuner","repo":"james-gibson/tuner","mcp_url":"http://127.0.0.1:9200/mcp"}]}`
+
+	var info ClusterInfo
+	if err := json.Unmarshal([]byte(body), &info); err != nil {
+		t.Fatalf("decode registry entry: %v", err)
+	}
+	if len(info.Projects) != 1 {
+		t.Fatalf("projects = %+v, want 1", info.Projects)
+	}
+	if info.Projects[0].ID != "01JABCDEF" {
+		t.Fatalf("project id dropped: %+v", info.Projects[0])
+	}
+	if got := info.Projects[0].routingID(); got != "01JABCDEF" {
+		t.Fatalf("legacy id should stand in for the route, got %q", got)
+	}
+}
+
+// TestRegistryProjectRoutePreferred covers the ADR lezz.go 0003 vocabulary:
+// route is the current field and id is the legacy alias, so a payload carrying
+// both routes on the route.
+func TestRegistryProjectRoutePreferred(t *testing.T) {
+	const body = `{"name":"demo-001","projects":[{"route":"route-a","id":"id-b","name":"tuner","mcp_url":"http://127.0.0.1:9200/mcp"}]}`
+
+	var info ClusterInfo
+	if err := json.Unmarshal([]byte(body), &info); err != nil {
+		t.Fatalf("decode registry entry: %v", err)
+	}
+	if len(info.Projects) != 1 {
+		t.Fatalf("projects = %+v, want 1", info.Projects)
+	}
+	if got := info.Projects[0].routingID(); got != "route-a" {
+		t.Fatalf("routingID = %q, want route-a", got)
+	}
+}
+
+// TestConfigFromClustersSurfacesProjects covers the automated project-context
+// path: a cluster advertising projects must have them carried in the config's
+// DiscoveredClusters. Without this, adhd --demo builds a config from the
+// registry and silently drops the cluster's adhd_mcp endpoint and projects, so
+// no adhd.project.<id>.call proxy tool is ever registered.
+func TestConfigFromClustersSurfacesProjects(t *testing.T) {
+	cfg := ConfigFromClusters([]ClusterInfo{
+		{
+			Name:    "demo-001",
+			AlarmA:  "http://192.168.1.10:9001",
+			AdhdMCP: "http://192.168.1.10:9100/mcp",
+			Projects: []ProjectEntry{
+				{ID: "01JABCDEF", Name: "tuner", Repo: "james-gibson/tuner", MCPURL: "http://192.168.1.10:9200/mcp"},
+				{Name: "legacy", Repo: "james-gibson/legacy", MCPURL: "http://192.168.1.10:9300/mcp"},
+			},
+		},
+	})
+
+	// The alarm endpoints keep the shape they always had.
+	if len(cfg.SmokeAlarm) != 1 || cfg.SmokeAlarm[0].Name != "alarm-a" {
+		t.Fatalf("SmokeAlarm = %+v, want one alarm-a endpoint", cfg.SmokeAlarm)
+	}
+
+	if len(cfg.DiscoveredClusters) != 1 {
+		t.Fatalf("DiscoveredClusters = %+v, want 1", cfg.DiscoveredClusters)
+	}
+	dc := cfg.DiscoveredClusters[0]
+	if dc.Name != "demo-001" {
+		t.Errorf("cluster name = %q, want demo-001", dc.Name)
+	}
+	if dc.AdhdMCP != "http://192.168.1.10:9100/mcp" {
+		t.Errorf("adhd_mcp dropped: %q", dc.AdhdMCP)
+	}
+	if len(dc.Projects) != 2 {
+		t.Fatalf("projects = %+v, want 2", dc.Projects)
+	}
+	if dc.Projects[0].Route != "01JABCDEF" || dc.Projects[0].Name != "tuner" ||
+		dc.Projects[0].Repo != "james-gibson/tuner" || dc.Projects[0].MCPURL != "http://192.168.1.10:9200/mcp" {
+		t.Errorf("project identity dropped: %+v", dc.Projects[0])
+	}
+	// A project without a seed id keeps it empty: the route falls back to the
+	// display name at registration time, and only then is it non-explicit.
+	if dc.Projects[1].Route != "" {
+		t.Errorf("absent route should stay empty, got %q", dc.Projects[1].Route)
+	}
+}
+
+// TestConfigFromClustersWithoutProjectsKeepsClusterIdentity asserts the MCP
+// endpoint is still surfaced for a cluster that publishes no projects — the
+// peer remains addressable for path negotiation.
+func TestConfigFromClustersWithoutProjectsKeepsClusterIdentity(t *testing.T) {
+	cfg := ConfigFromClusters([]ClusterInfo{{Name: "demo-001", AdhdMCP: "http://192.168.1.10:9100/mcp"}})
+	if len(cfg.DiscoveredClusters) != 1 {
+		t.Fatalf("DiscoveredClusters = %+v, want 1", cfg.DiscoveredClusters)
+	}
+	if got := cfg.DiscoveredClusters[0].AdhdMCP; got != "http://192.168.1.10:9100/mcp" {
+		t.Fatalf("adhd_mcp = %q", got)
+	}
+	if got := cfg.DiscoveredClusters[0].Projects; len(got) != 0 {
+		t.Fatalf("projects = %+v, want none", got)
 	}
 }
 

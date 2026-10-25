@@ -163,6 +163,11 @@ func (s *Server) Start(logPath string) error {
 	if s.cfg.MCPServer.Enabled {
 		s.mcpServer = mcpserver.NewServer(s.cfg.MCPServer, s.cluster)
 
+		// Wire clusters discovered by --demo before any join push arrives, so a
+		// headless instance started from a discovered config still exposes the
+		// clusters' adhd.project.<route>.call proxy tools.
+		s.mcpServer.RegisterDiscoveredClusters(s.cfg.DiscoveredClusters)
+
 		// Provide topology information to MCP server
 		s.mcpServer.SetTopologyProvider(s.GetTopologyInfo)
 

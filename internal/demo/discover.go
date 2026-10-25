@@ -71,9 +71,21 @@ func RegistryURLForAlarm(alarmURL string) string {
 
 // ProjectEntry describes a project within a cluster that exposes an MCP server.
 type ProjectEntry struct {
-	Name   string `json:"name"`    // short name, e.g. "tuner", "adhd"
-	Repo   string `json:"repo"`    // GitHub slug, e.g. "james-gibson/tuner"
-	MCPURL string `json:"mcp_url"` // base URL of the project's MCP server
+	Route  string `json:"route,omitempty"` // routing id (ADR lezz.go 0003)
+	ID     string `json:"id,omitempty"`    // legacy alias for route, still published by lezz demo
+	Name   string `json:"name"`            // short name, e.g. "tuner", "adhd"
+	Repo   string `json:"repo"`            // GitHub slug, e.g. "james-gibson/tuner"
+	MCPURL string `json:"mcp_url"`         // base URL of the project's MCP server
+}
+
+// routingID returns the project's route, preferring the current field and
+// falling back to the legacy id alias lezz demo still publishes. An empty
+// result means the tool is namespaced by the display name instead.
+func (p ProjectEntry) routingID() string {
+	if p.Route != "" {
+		return p.Route
+	}
+	return p.ID
 }
 
 // ClusterInfo mirrors the JSON published by lezz demo's /cluster endpoint.
@@ -258,12 +270,37 @@ func loopbackHost(base string) string {
 	return fmt.Sprintf("http://127.0.0.1:%s", u.Port())
 }
 
+// DiscoveredCluster returns the MCP-side view of c: its adhd_mcp endpoint and
+// project entries, in config form. Alarm endpoints are deliberately not
+// included — ConfigFromClusters expands those into SmokeAlarm.
+func DiscoveredCluster(c ClusterInfo) config.DiscoveredCluster {
+	dc := config.DiscoveredCluster{Name: c.Name, AdhdMCP: c.AdhdMCP}
+	for _, p := range c.Projects {
+		// The route is kept exactly as published. An absent one is not filled in
+		// here: the server treats a missing route as a display-name fallback,
+		// which must not be allowed to replace another project's tool.
+		dc.Projects = append(dc.Projects, config.ClusterProject{
+			Route:  p.routingID(),
+			Name:   p.Name,
+			Repo:   p.Repo,
+			MCPURL: p.MCPURL,
+		})
+	}
+	return dc
+}
+
 // ConfigFromClusters builds a *config.Config whose SmokeAlarm endpoints are
 // populated from the discovered clusters. Each cluster contributes alarm_a and
 // alarm_b; names are prefixed with the cluster name when there are multiple
-// clusters to avoid collisions.
+// clusters to avoid collisions. The clusters' MCP identity (adhd_mcp and
+// projects) is carried in DiscoveredClusters so the hosted MCP server can
+// register their proxy tools at startup instead of waiting for a push join.
 func ConfigFromClusters(clusters []ClusterInfo) *config.Config {
 	cfg := config.DefaultConfig()
+	cfg.DiscoveredClusters = make([]config.DiscoveredCluster, 0, len(clusters))
+	for _, c := range clusters {
+		cfg.DiscoveredClusters = append(cfg.DiscoveredClusters, DiscoveredCluster(c))
+	}
 	for _, c := range clusters {
 		prefix := ""
 		if len(clusters) > 1 {

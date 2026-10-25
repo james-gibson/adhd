@@ -62,10 +62,13 @@ func waitForLightUpdate(ch <-chan smokelink.LightUpdate) tea.Cmd {
 
 // ClusterRegistryUpdateMsg is delivered when the lezz demo cluster registry
 // at /cluster has new entries since the last poll. NewEndpoints contains the
-// SmokeAlarmEndpoints derived from newly-seen clusters; NewNames is the list
-// of cluster names that should be marked as known after this update.
+// SmokeAlarmEndpoints derived from newly-seen clusters; NewClusters carries
+// their MCP identity (adhd_mcp endpoint and projects) so their proxy tools can
+// be registered without a restart; NewNames is the list of cluster names that
+// should be marked as known after this update.
 type ClusterRegistryUpdateMsg struct {
 	NewEndpoints []config.SmokeAlarmEndpoint
+	NewClusters  []config.DiscoveredCluster
 	NewNames     []string
 	RegistryURL  string
 }
@@ -99,12 +102,14 @@ func pollClusterRegistry(registryURL string, knownNames map[string]bool) tea.Cmd
 			return ClusterRegistryUpdateMsg{RegistryURL: registryURL}
 		}
 		var newEndpoints []config.SmokeAlarmEndpoint
+		var newClusters []config.DiscoveredCluster
 		var newNames []string
 		for _, c := range clusters {
 			if snapshot[c.Name] {
 				continue
 			}
 			newNames = append(newNames, c.Name)
+			newClusters = append(newClusters, demo.DiscoveredCluster(c))
 			if c.AlarmA != "" {
 				newEndpoints = append(newEndpoints, config.SmokeAlarmEndpoint{
 					Name:     c.Name + "/alarm-a",
@@ -122,6 +127,7 @@ func pollClusterRegistry(registryURL string, knownNames map[string]bool) tea.Cmd
 		}
 		return ClusterRegistryUpdateMsg{
 			NewEndpoints: newEndpoints,
+			NewClusters:  newClusters,
 			NewNames:     newNames,
 			RegistryURL:  registryURL,
 		}
