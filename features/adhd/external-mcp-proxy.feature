@@ -6,8 +6,9 @@ Feature: External MCP Server Proxying (Manual Path)
   The system allows manual proxying of external MCP servers via adhd.proxy
   and via named project tools registered through adhd.cluster.join with projects.
 
-  The automated path (projects propagation via lezz/demo discovery) is
-  half-wired; these scenarios pin the manual contract that must hold.
+  The automated path (lezz demo publishes projects → adhd --demo carries them
+  in its discovered-cluster config) is covered by demo-mode.feature; these
+  scenarios pin the manual contract that must hold.
 
   Background:
     Given an ADHD MCP server is running with MCP server enabled

@@ -16,6 +16,30 @@ type Config struct {
 	MCPTargets        []MCPTarget           `yaml:"mcp_targets"`
 	Features          FeaturesConfig        `yaml:"features"`
 	CertifiedEndpoints []CertifiedEndpoint  `yaml:"certified_endpoints"`
+	// DiscoveredClusters carries the MCP-side context of lezz demo clusters
+	// found by `adhd --demo`: their adhd_mcp endpoints and projects. Their alarm
+	// endpoints are expanded into SmokeAlarm, which is the shape the watcher
+	// consumes; the MCP identity has no other representation, so dropping it
+	// silently drops the clusters' adhd.project.<route>.call proxy tools.
+	DiscoveredClusters []DiscoveredCluster `yaml:"discovered_clusters,omitempty"`
+}
+
+// DiscoveredCluster is a lezz demo cluster discovered by `adhd --demo`, or
+// added later by registry polling. It carries the cluster's MCP identity only —
+// the alarm endpoints live in SmokeAlarm.
+type DiscoveredCluster struct {
+	Name     string           `yaml:"name"`
+	AdhdMCP  string           `yaml:"adhd_mcp,omitempty"` // cluster's own MCP endpoint
+	Projects []ClusterProject `yaml:"projects,omitempty"`
+}
+
+// ClusterProject is a project inside a discovered cluster that exposes its own
+// MCP server. Each one becomes an adhd.project.<route>.call proxy tool.
+type ClusterProject struct {
+	Route  string `yaml:"route,omitempty"` // routing id; namespaces the tool (ADR lezz.go 0003)
+	Name   string `yaml:"name"`
+	Repo   string `yaml:"repo,omitempty"`
+	MCPURL string `yaml:"mcp_url"`
 }
 
 // HealthConfig configures health monitoring

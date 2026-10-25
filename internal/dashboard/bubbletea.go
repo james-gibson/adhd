@@ -201,6 +201,9 @@ func NewBubbleTeaDashboard(cfg *config.Config) *BubbleTeaDashboard {
 	var mcpServer *mcpserver.Server
 	if cfg.MCPServer.Enabled {
 		mcpServer = mcpserver.NewServer(cfg.MCPServer, c)
+		// Clusters discovered by --demo carry their projects here; without this
+		// the proxy tools exist only when a cluster pushes adhd.cluster.join.
+		mcpServer.RegisterDiscoveredClusters(cfg.DiscoveredClusters)
 		slog.Info("MCP server configured", "addr", cfg.MCPServer.Addr)
 	}
 
@@ -553,6 +556,12 @@ func (m *BubbleTeaDashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.watcher.WatchEndpoint(m.ctx, ep, m.lightUpdates)
 			slog.Info("demo registry: new cluster wired", "endpoint", ep.Name, "url", ep.Endpoint)
+		}
+
+		// A cluster that joined after startup carries its projects with it, so
+		// register their proxy tools now rather than requiring a restart.
+		if m.mcpServer != nil && len(msg.NewClusters) > 0 {
+			m.mcpServer.RegisterDiscoveredClusters(msg.NewClusters)
 		}
 
 		if len(msg.NewNames) > 0 {

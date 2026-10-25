@@ -583,10 +583,18 @@ func (s *Server) handleToolsList() interface{} {
 					},
 					"projects": map[string]interface{}{
 						"type":        "array",
-						"description": "Projects exposing an MCP server; each registers an adhd.project.<name>.call proxy tool",
+						"description": "Projects exposing an MCP server; each registers an adhd.project.<route>.call proxy tool, where <route> defaults to the project name",
 						"items": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
+								"route": map[string]interface{}{
+									"type":        "string",
+									"description": "Stable project route that namespaces the tool; defaults to name (ADR lezz.go 0003)",
+								},
+								"id": map[string]interface{}{
+									"type":        "string",
+									"description": "Legacy alias for route, as published by lezz demo registries",
+								},
 								"name":    map[string]interface{}{"type": "string"},
 								"repo":    map[string]interface{}{"type": "string"},
 								"mcp_url": map[string]interface{}{"type": "string"},
@@ -2051,6 +2059,42 @@ const (
 type joinConflict struct {
 	Tool   string `json:"tool"`
 	Reason string `json:"reason"`
+}
+
+// RegisterDiscoveredClusters wires clusters discovered by `adhd --demo` into the
+// hosted MCP server: each project becomes an adhd.project.<route>.call proxy
+// tool, and each cluster's adhd_mcp endpoint becomes an addressable peer for
+// path negotiation. It is the config-driven counterpart of adhd.cluster.join,
+// which remains the push path used by lezz demo. Registration follows the same
+// outcome rules as a join: an identical repeat is unchanged, and a project whose
+// route moves to a new endpoint replaces its tool.
+func (s *Server) RegisterDiscoveredClusters(clusters []config.DiscoveredCluster) {
+	for _, c := range clusters {
+		if c.AdhdMCP != "" {
+			s.mu.Lock()
+			if s.clusterPeers == nil {
+				s.clusterPeers = make(map[string]*clusterPeerInfo)
+			}
+			if _, known := s.clusterPeers[c.Name]; !known {
+				s.clusterPeers[c.Name] = &clusterPeerInfo{
+					Name:     c.Name,
+					Endpoint: c.AdhdMCP,
+					JoinedAt: time.Now(),
+				}
+			}
+			s.mu.Unlock()
+		}
+		for _, p := range c.Projects {
+			if p.Name == "" || p.MCPURL == "" {
+				continue
+			}
+			// A published route is the project's identity, exactly as
+			// adhd.cluster.join reads it. Without one the route falls back to
+			// the name and is not explicit, so a name collision is reported
+			// rather than silently replacing another project's tool.
+			s.registerProjectToolID(c.Name, p.Route, p.Name, p.Repo, p.MCPURL, p.Route != "")
+		}
+	}
 }
 
 // registerProjectTool is the legacy entry point: the display name is the route.
