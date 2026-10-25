@@ -17,7 +17,7 @@ func TestRegisterDiscoveredClustersWiresProjectsAndPeer(t *testing.T) {
 		Name:    "demo-001",
 		AdhdMCP: "http://127.0.0.1:9100/mcp",
 		Projects: []config.ClusterProject{
-			{Route: "01JABCDEF", Name: "tuner", Repo: "james-gibson/tuner", MCPURL: "http://127.0.0.1:9200/mcp"},
+			{ID: "01JABCDEF", Name: "tuner", Repo: "james-gibson/tuner", MCPURL: "http://127.0.0.1:9200/mcp"},
 			{Name: "", MCPURL: "http://127.0.0.1:9300/mcp"}, // anonymous: dropped
 		},
 	}}
@@ -53,11 +53,11 @@ func TestRegisterDiscoveredClustersWiresProjectsAndPeer(t *testing.T) {
 }
 
 // TestRegisterDiscoveredClusterMovesProjectOnNewEndpoint covers a lezz demo
-// restart: the seed id is the route, so the same project on a new URL replaces
+// restart: the seed id is the identity, so the same project on a new URL replaces
 // its tool instead of leaving a stale proxy pointing at a dead port.
 func TestRegisterDiscoveredClusterMovesProjectOnNewEndpoint(t *testing.T) {
 	s := &Server{}
-	project := config.ClusterProject{Route: "01JABCDEF", Name: "tuner", MCPURL: "http://127.0.0.1:9200/mcp"}
+	project := config.ClusterProject{ID: "01JABCDEF", Name: "tuner", MCPURL: "http://127.0.0.1:9200/mcp"}
 	s.RegisterDiscoveredClusters([]config.DiscoveredCluster{{
 		Name: "demo-001", AdhdMCP: "http://127.0.0.1:9100/mcp", Projects: []config.ClusterProject{project},
 	}})

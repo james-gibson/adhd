@@ -90,13 +90,13 @@ Feature: ADHD Demo Mode Cluster Discovery
   Scenario: a project with a seed id is namespaced by that id, not the display name
     Given a discovered cluster advertises a project with id "01JABCDEF" and name "tuner"
     When adhd builds the config via ConfigFromClusters
-    Then the project keeps id "01JABCDEF" as its route
+    Then the project keeps id "01JABCDEF" as its tool namespace
     And the proxy tool is named adhd.project.01JABCDEF.call
     And the tool description contains "tuner"
 
-  Scenario: the same route on a new endpoint replaces the project's proxy tool
-    Given a discovered cluster advertises project route "01JABCDEF" at "http://192.168.1.10:9200/mcp"
-    When the same cluster is discovered again with route "01JABCDEF" at "http://192.168.1.10:9400/mcp"
+  Scenario: the same seed id on a new endpoint replaces the project's proxy tool
+    Given a discovered cluster advertises project id "01JABCDEF" at "http://192.168.1.10:9200/mcp"
+    When the same cluster is discovered again with id "01JABCDEF" at "http://192.168.1.10:9400/mcp"
     Then adhd.project.01JABCDEF.call remains registered exactly once
     And it proxies to "http://192.168.1.10:9400/mcp"
 

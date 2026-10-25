@@ -244,15 +244,13 @@ func TestRegistryProjectIDIsParsed(t *testing.T) {
 	if info.Projects[0].ID != "01JABCDEF" {
 		t.Fatalf("project id dropped: %+v", info.Projects[0])
 	}
-	if got := info.Projects[0].routingID(); got != "01JABCDEF" {
-		t.Fatalf("legacy id should stand in for the route, got %q", got)
-	}
 }
 
-// TestRegistryProjectRoutePreferred covers the ADR lezz.go 0003 vocabulary:
-// route is the current field and id is the legacy alias, so a payload carrying
-// both routes on the route.
-func TestRegistryProjectRoutePreferred(t *testing.T) {
+// TestRegistryProjectRouteIsNotAnIdentity pins the seed model: the seed id is
+// the stable project identity, while a route rotates. A registry entry that
+// also carries a route must still namespace the tool by the seed id, or the
+// tool name would churn every tick.
+func TestRegistryProjectRouteIsNotAnIdentity(t *testing.T) {
 	const body = `{"name":"demo-001","projects":[{"route":"route-a","id":"id-b","name":"tuner","mcp_url":"http://127.0.0.1:9200/mcp"}]}`
 
 	var info ClusterInfo
@@ -262,8 +260,9 @@ func TestRegistryProjectRoutePreferred(t *testing.T) {
 	if len(info.Projects) != 1 {
 		t.Fatalf("projects = %+v, want 1", info.Projects)
 	}
-	if got := info.Projects[0].routingID(); got != "route-a" {
-		t.Fatalf("routingID = %q, want route-a", got)
+	dc := DiscoveredCluster(info)
+	if got := dc.Projects[0].ID; got != "id-b" {
+		t.Fatalf("project id = %q, want the seed id id-b", got)
 	}
 }
 
@@ -303,14 +302,14 @@ func TestConfigFromClustersSurfacesProjects(t *testing.T) {
 	if len(dc.Projects) != 2 {
 		t.Fatalf("projects = %+v, want 2", dc.Projects)
 	}
-	if dc.Projects[0].Route != "01JABCDEF" || dc.Projects[0].Name != "tuner" ||
+	if dc.Projects[0].ID != "01JABCDEF" || dc.Projects[0].Name != "tuner" ||
 		dc.Projects[0].Repo != "james-gibson/tuner" || dc.Projects[0].MCPURL != "http://192.168.1.10:9200/mcp" {
 		t.Errorf("project identity dropped: %+v", dc.Projects[0])
 	}
-	// A project without a seed id keeps it empty: the route falls back to the
-	// display name at registration time, and only then is it non-explicit.
-	if dc.Projects[1].Route != "" {
-		t.Errorf("absent route should stay empty, got %q", dc.Projects[1].Route)
+	// A project without a seed id keeps it empty: the display name is used as
+	// the fallback at registration time, and only then is it non-explicit.
+	if dc.Projects[1].ID != "" {
+		t.Errorf("absent id should stay empty, got %q", dc.Projects[1].ID)
 	}
 }
 
