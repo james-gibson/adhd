@@ -542,14 +542,7 @@ func (s *Server) RegisterAsIsotope(smokeAlarmURL string) error {
 	}
 
 	// Determine role for registration
-	role := s.role
-	if role == RoleStandalone {
-		if s.isPrimePlus {
-			role = RolePrimePlus
-		} else {
-			role = RolePrime
-		}
-	}
+	role := s.registrationRole()
 
 	label := s.instanceLabel()
 
