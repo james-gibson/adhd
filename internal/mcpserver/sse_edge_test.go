@@ -48,7 +48,7 @@ func TestEdgeStreamHandshakeAndClientAbort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if got := resp.Header.Get("Content-Type"); got != "text/event-stream" {
 		t.Fatalf("content-type: got %q, want text/event-stream", got)

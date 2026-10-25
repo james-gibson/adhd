@@ -252,7 +252,7 @@ func FuzzProxyChain(f *testing.F) {
 		}
 
 		// The reply peels exactly `depth` times, no more and no less.
-		var payload map[string]interface{} = map[string]interface{}{"instance": nodes[path[len(path)-1]].name}
+		payload := map[string]interface{}{"instance": nodes[path[len(path)-1]].name}
 		for i := 0; i < depth; i++ {
 			payload = map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": payload}
 		}

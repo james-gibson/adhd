@@ -188,8 +188,5 @@ func validRequestID(raw json.RawMessage) bool {
 		return true
 	}
 	var num json.Number
-	if json.Unmarshal(raw, &num) == nil {
-		return true
-	}
-	return false
+	return json.Unmarshal(raw, &num) == nil
 }

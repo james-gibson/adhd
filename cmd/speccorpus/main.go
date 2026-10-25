@@ -154,7 +154,7 @@ func generate(out io.Writer) (int, error) {
 				"jsonrpc":           boolFloat(body["jsonrpc"] != nil),
 				"id":                boolFloat(body["id"] != nil),
 				"method":            boolFloat(body["method"] != nil),
-				"params_object":     boolFloat(bit(9) == false),
+				"params_object":     boolFloat(!bit(9)),
 				"no_unknown":        boolFloat(body["x"] == nil),
 				"size_ok":           1,
 			},

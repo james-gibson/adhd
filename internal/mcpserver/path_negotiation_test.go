@@ -213,9 +213,7 @@ func TestPathTickLifetimeAndSegments(t *testing.T) {
 		t.Fatalf("route has %d segments, want 2", len(rawSegments))
 	}
 	segments := make([]interface{}, 0, len(rawSegments))
-	for _, segment := range rawSegments {
-		segments = append(segments, segment)
-	}
+	segments = append(segments, rawSegments...)
 
 	call := func(segs []interface{}) rpcOutcome {
 		return postChain(t, a.url, map[string]interface{}{
