@@ -6,11 +6,11 @@ package demo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/james-gibson/adhd/internal/config"
@@ -113,11 +113,6 @@ func Browse(ctx context.Context, timeout time.Duration) ([]ClusterInfo, error) {
 	}
 	ch := make(chan result, 2)
 
-	// staleRegistry records that the localhost registry answered but nothing
-	// behind it was alive, so the final error can name the ghost instead of
-	// suggesting no registry is running at all.
-	var staleRegistry atomic.Bool
-
 	// Strategy 1: mDNS.
 	go func() {
 		browser := discovery.NewBrowser()
@@ -143,44 +138,70 @@ func Browse(ctx context.Context, timeout time.Duration) ([]ClusterInfo, error) {
 		}
 	}()
 
-	// Strategy 2: direct localhost HTTP poll (same machine, mDNS may be unreliable).
+	// Strategy 2: direct localhost HTTP poll (same machine, mDNS may be
+	// unreliable). It lives in its own function so the regression it exists for
+	// — the registry URL — can be tested without a LAN mDNS answer racing it.
 	go func() {
-		ticker := time.NewTicker(pollInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-browseCtx.Done():
-				ch <- result{err: browseCtx.Err()}
-				return
-			case <-ticker.C:
-				clusters, err := fetchRegistry(browseCtx, RegistryURL("127.0.0.1", 0))
-				if err != nil || len(clusters) == 0 {
-					continue
-				}
-				if !hasLiveAlarm(browseCtx, clusters) {
-					staleRegistry.Store(true)
-					continue
-				}
-				ch <- result{clusters: clusters}
-				return
-			}
-		}
+		clusters, err := browseLocalRegistry(browseCtx)
+		ch <- result{clusters: clusters, err: err}
 	}()
 
 	// Return whichever strategy wins; ignore errors unless both fail.
 	var lastErr error
+	sawStaleRegistry := false
 	for range 2 {
 		r := <-ch
 		if r.err == nil {
 			return r.clusters, nil
 		}
+		if errors.Is(r.err, errStaleLocalRegistry) {
+			sawStaleRegistry = true
+		}
 		lastErr = r.err
 	}
 	err := fmt.Errorf("no lezz demo found on the LAN within %s — is lezz demo running? (%w)", timeout, lastErr)
-	if staleRegistry.Load() {
+	if sawStaleRegistry {
 		return nil, fmt.Errorf("%w; the local registry at %s advertised clusters but none of their alarms answered a health probe — stale registry entry", err, RegistryURL("127.0.0.1", 0))
 	}
 	return nil, err
+}
+
+// errStaleLocalRegistry marks a localhost registry that answered with clusters
+// whose alarms are all dead. It is a distinct error so Browse can name the ghost
+// in its message instead of suggesting no registry is running at all.
+var errStaleLocalRegistry = errors.New("local registry advertised clusters but none of their alarms answered a health probe")
+
+// browseLocalRegistry is Browse's localhost fallback: poll the well-known
+// registry until one answers with a cluster that has at least one live alarm.
+//
+// The URL is the point. This fallback used to poll an mDNS-style hostname that
+// could never resolve, so discovery failed even with a registry on the same
+// machine; keeping the poll here — rather than inline in Browse's race — is what
+// lets a test pin that without a real LAN cluster deciding who wins.
+func browseLocalRegistry(ctx context.Context) ([]ClusterInfo, error) {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	stale := false
+	for {
+		select {
+		case <-ctx.Done():
+			if stale {
+				return nil, fmt.Errorf("%w: %w", errStaleLocalRegistry, ctx.Err())
+			}
+			return nil, ctx.Err()
+		case <-ticker.C:
+			clusters, err := fetchRegistry(ctx, RegistryURL("127.0.0.1", 0))
+			if err != nil || len(clusters) == 0 {
+				continue
+			}
+			if !hasLiveAlarm(ctx, clusters) {
+				stale = true
+				continue
+			}
+			return clusters, nil
+		}
+	}
 }
 
 // hasLiveAlarm reports whether at least one alarm advertised by these clusters

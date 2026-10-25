@@ -11,22 +11,16 @@ import (
 	"time"
 )
 
-// TestBrowseFindsLocalRegistry is a regression test for the localhost HTTP
-// fallback in Browse. The fallback previously polled a non-resolvable
-// mDNS-style hostname ("_smoke-alarm.tcp") instead of the loopback address, so
-// discovery always failed even when a registry was listening on the same
-// machine. This test starts a registry on 127.0.0.1:DiscoveryPort and asserts
-// Browse finds it.
-//
-// The registry also answers /healthz, because the fallback trusts a registry
-// only while one of its alarms is alive (see hasLiveAlarm): the fixture's own
-// address stands in for the alarm.
-//
-// It skips when the well-known discovery port is already in use, since that
-// means a real registry (or another test) owns it.
-func TestBrowseFindsLocalRegistry(t *testing.T) {
+// startLocalRegistryFixture serves the two endpoints a localhost registry
+// needs: /cluster advertises one cluster whose own address stands in for a live
+// alarm, and /healthz answers for that alarm (see hasLiveAlarm). It skips when
+// the well-known port is already in use, since that means a real registry (or
+// another test) owns it.
+func startLocalRegistryFixture(t *testing.T) (alarmURL string) {
+	t.Helper()
+
 	addr := fmt.Sprintf("127.0.0.1:%d", DiscoveryPort)
-	alarmURL := "http://" + addr
+	alarmURL = "http://" + addr
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/cluster", func(w http.ResponseWriter, _ *http.Request) {
@@ -42,24 +36,78 @@ func TestBrowseFindsLocalRegistry(t *testing.T) {
 	if err != nil {
 		t.Skipf("discovery port %s unavailable: %v", addr, err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	go func() { _ = srv.Serve(listener) }()
-	defer func() { _ = srv.Close() }()
+
+	return alarmURL
+}
+
+// TestBrowseLocalRegistryFindsLoopbackRegistry is the regression test for the
+// localhost HTTP fallback: it used to poll a non-resolvable mDNS-style hostname
+// ("_smoke-alarm.tcp") instead of the loopback address, so discovery failed even
+// with a registry listening on the same machine.
+//
+// It targets the fallback directly rather than Browse. Browse races mDNS against
+// the fallback and returns whichever answers first, so on a machine with a live
+// demo cluster on the LAN the fallback is never consulted and its URL is not
+// exercised at all — a Browse-level assertion cannot pin this on such a machine.
+func TestBrowseLocalRegistryFindsLoopbackRegistry(t *testing.T) {
+	alarmURL := startLocalRegistryFixture(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	clusters, err := Browse(ctx, 3*time.Second)
+	clusters, err := browseLocalRegistry(ctx)
 	if err != nil {
-		t.Fatalf("Browse returned error: %v", err)
+		t.Fatalf("browseLocalRegistry returned error: %v", err)
 	}
 	if len(clusters) != 1 {
-		t.Fatalf("expected 1 cluster, got %d: %+v", len(clusters), clusters)
+		t.Fatalf("expected the fixture's 1 cluster, got %d: %+v", len(clusters), clusters)
 	}
 	if clusters[0].Name != "local" {
 		t.Fatalf("expected cluster %q, got %q", "local", clusters[0].Name)
 	}
 	if clusters[0].AlarmA != alarmURL {
 		t.Fatalf("unexpected alarm_a: %q", clusters[0].AlarmA)
+	}
+}
+
+// TestBrowseFindsClusters is the Browse-level contract: however discovery
+// answers — the fixture registry on loopback on a quiet machine, or real lezz
+// demo clusters on the LAN — it must return usable clusters rather than fail, or
+// hand back an entry a caller cannot configure adhd with.
+//
+// This deliberately does not assert "exactly one cluster". On a developer
+// machine with demo clusters running, mDNS legitimately finds all of them; that
+// is the code working, not the test's environment leaking in.
+func TestBrowseFindsClusters(t *testing.T) {
+	alarmURL := startLocalRegistryFixture(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	clusters, err := Browse(ctx, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Browse returned error: %v", err)
+	}
+	if len(clusters) == 0 {
+		t.Fatal("Browse returned no clusters and no error")
+	}
+	for _, c := range clusters {
+		if c.Name == "" {
+			t.Errorf("cluster has no name: %+v", c)
+		}
+		if c.AlarmA == "" && c.AlarmB == "" {
+			t.Errorf("cluster %q advertises no alarm to configure: %+v", c.Name, c)
+		}
+	}
+
+	// On a quiet machine the fixture is what discovery finds, so the fields are
+	// exact; on a busy one it only has to be one usable cluster among many.
+	if len(clusters) == 1 {
+		if clusters[0].Name != "local" || clusters[0].AlarmA != alarmURL {
+			t.Fatalf("expected the fixture cluster %q with alarm_a %q, got %+v", "local", alarmURL, clusters[0])
+		}
 	}
 }
 
