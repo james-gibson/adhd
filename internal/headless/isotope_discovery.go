@@ -1,10 +1,15 @@
 package headless
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/james-gibson/adhd/internal/mcpclient"
@@ -20,6 +25,12 @@ const (
 	RoleStandalone IsotopeRole = "standalone" // No topology role
 )
 
+// IsotopeHeartbeatInterval is how often a registered instance renews its name.
+// It stays well inside smoke-alarm's isotope TTL (5m by default): the registry
+// treats a registration as a heartbeat and sweeps a name it has not heard from,
+// so a silent instance would stop resolving (smoke-alarm#35).
+const IsotopeHeartbeatInterval = time.Minute
+
 // IsotopePeer represents a discovered ADHD isotope
 type IsotopePeer struct {
 	Name      string      `json:"name"`
@@ -32,11 +43,11 @@ type IsotopePeer struct {
 
 // IsotopeTopology describes the current topology state
 type IsotopeTopology struct {
-	LocalRole   IsotopeRole   `json:"local_role"`
-	LocalName   string        `json:"local_name"`
-	PrimeAddr   string        `json:"prime_addr,omitempty"`
-	Peers       []IsotopePeer `json:"peers"`
-	DiscoveredAt time.Time    `json:"discovered_at"`
+	LocalRole    IsotopeRole   `json:"local_role"`
+	LocalName    string        `json:"local_name"`
+	PrimeAddr    string        `json:"prime_addr,omitempty"`
+	Peers        []IsotopePeer `json:"peers"`
+	DiscoveredAt time.Time     `json:"discovered_at"`
 }
 
 // DiscoverIsotopes queries smoke-alarm for all ADHD isotope peers
@@ -151,17 +162,30 @@ func AutoDiscoverPrime(ctx context.Context, smokeAlarmURL string) (string, error
 	return "", fmt.Errorf("no prime instance found in discovered isotopes")
 }
 
-// RegisterIsotopeWithRole registers this instance via smoke-alarm's REST /isotope/register
-// endpoint and returns the assigned trust rung (0 if registration fails).
-func RegisterIsotopeWithRole(ctx context.Context, smokeAlarmURL string, role IsotopeRole, localAddr string) (int, error) {
-	record, err := isotope.NewClient(smokeAlarmURL).Register(ctx, isotope.Registration{
-		Name:     "adhd",
+// RegisterIsotopeWithRole registers this instance via smoke-alarm's REST
+// /isotope/register endpoint and returns the assigned trust rung (0 if
+// registration fails). It sends no project identity; callers that have one use
+// RegisterIsotopeWithReferences.
+//
+// name is the instance label, not the product name: smoke-alarm keys its isotope
+// registry by name, so a constant ("adhd") makes a second instance overwrite the
+// first and the list shows one entry for two live instances (adhd#48). It is
+// required rather than defaulted, because a silent default is how the constant
+// got there.
+func RegisterIsotopeWithRole(ctx context.Context, smokeAlarmURL string, role IsotopeRole, localAddr, name string) (int, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, errors.New("isotope registration name is required: a constant name lets two instances overwrite each other in the smoke-alarm registry (adhd#48)")
+	}
+
+	record, err := RegisterIsotopeWithReferences(ctx, smokeAlarmURL, isotope.Registration{
+		Name:     name,
 		Role:     string(role),
 		Endpoint: localAddr,
 		Protocol: "mcp",
-	})
+	}, isotopeReferences{})
 	if err != nil {
-		return 0, fmt.Errorf("registration failed: %w", err)
+		return 0, err
 	}
 
 	slog.Info("registered as isotope",
@@ -173,6 +197,138 @@ func RegisterIsotopeWithRole(ctx context.Context, smokeAlarmURL string, role Iso
 	)
 
 	return record.TrustRung, nil
+}
+
+// RegisterIsotopeWithReferences POSTs the shared registration plus this
+// project's route and dependency pins. The registry keys by name, but a
+// dependent resolves by route; the contract pins the spec that dependency was
+// built against (smoke-alarm#35).
+func RegisterIsotopeWithReferences(ctx context.Context, smokeAlarmURL string, reg isotope.Registration, refs isotopeReferences) (*isotope.Record, error) {
+	body, err := json.Marshal(struct {
+		isotope.Registration
+		isotopeReferences
+	}{reg, refs})
+	if err != nil {
+		return nil, fmt.Errorf("registration failed: marshal: %w", err)
+	}
+
+	endpoint := strings.TrimRight(smokeAlarmURL, "/") + "/isotope/register"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("registration failed: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req) //nolint:gosec // G704: the registry is the configured smoke-alarm endpoint
+	if err != nil {
+		return nil, fmt.Errorf("registration failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("registration failed: status %d", resp.StatusCode)
+	}
+
+	var record isotope.Record
+	if err := json.NewDecoder(resp.Body).Decode(&record); err != nil {
+		return nil, fmt.Errorf("registration failed: decode response: %w", err)
+	}
+	return &record, nil
+}
+
+// ServeIsotopeHeartbeat renews this instance's registration until ctx is
+// canceled. A registry entry is a heartbeat, not a name: without renewal,
+// smoke-alarm sweeps the entry after its isotope TTL and the instance stops
+// resolving by name (smoke-alarm#35). Renewal failures are logged and retried
+// on the next tick; a transient registry outage must not take adhd down.
+func (s *Server) ServeIsotopeHeartbeat(ctx context.Context, smokeAlarmURL string, interval time.Duration) {
+	if interval <= 0 {
+		interval = IsotopeHeartbeatInterval
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.renewIsotopeRegistration(ctx, smokeAlarmURL); err != nil && ctx.Err() == nil {
+				slog.Warn("isotope heartbeat failed", "error", err)
+			}
+		}
+	}
+}
+
+// renewIsotopeRegistration re-registers the same instance label and endpoint,
+// with the same project identity. The registry keeps the rung it already
+// assigned to an unchanged endpoint, so a renewal does not re-run the trust
+// probe. ctx bounds the request, so cancellation cannot leave a beat in flight
+// after shutdown.
+func (s *Server) renewIsotopeRegistration(ctx context.Context, smokeAlarmURL string) error {
+	rung, err := s.registerWithIdentity(ctx, smokeAlarmURL, s.registrationRole(), s.instanceLabel(), s.cfg.MCPServer.Addr)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.trustLevel = rung
+	s.mu.Unlock()
+	return nil
+}
+
+// registrationRole is the role this instance claims to the registry.
+func (s *Server) registrationRole() IsotopeRole {
+	if s.role == RoleStandalone {
+		if s.isPrimePlus {
+			return RolePrimePlus
+		}
+		return RolePrime
+	}
+	return s.role
+}
+
+// registerWithIdentity registers this instance with its project route and the
+// dependencies it pins, and returns the registry's trust rung.
+func (s *Server) registerWithIdentity(ctx context.Context, smokeAlarmURL string, role IsotopeRole, name, addr string) (int, error) {
+	record, err := RegisterIsotopeWithReferences(ctx, smokeAlarmURL, isotope.Registration{
+		Name:     name,
+		Role:     string(role),
+		Endpoint: addr,
+		Protocol: "mcp",
+	}, s.isotopeReferences())
+	if err != nil {
+		return 0, err
+	}
+	return record.TrustRung, nil
+}
+
+// DeregisterIsotope removes this instance's registry entry. It is best-effort:
+// the entry expires on its own, so failing to reach the registry on shutdown is
+// not an error worth blocking on.
+func (s *Server) DeregisterIsotope(smokeAlarmURL string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	endpoint := strings.TrimRight(smokeAlarmURL, "/") + "/isotope/" + url.PathEscape(s.instanceLabel())
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, http.NoBody)
+	if err != nil {
+		slog.Warn("isotope deregistration: build request", "error", err)
+		return
+	}
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // G704: the registry is the configured smoke-alarm endpoint
+	if err != nil {
+		slog.Warn("isotope deregistration failed", "error", err)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// 404 means it already expired or was removed: the desired end state.
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
+		slog.Warn("isotope deregistration rejected", "status", resp.StatusCode)
+	}
 }
 
 // PeriodicDiscovery runs discovery at intervals and auto-configures prime if not set

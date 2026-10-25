@@ -73,6 +73,17 @@ Feature: ADHD Headless Mode
     And no _adhd-isotope._tcp mDNS record is advertised
     And the smoke-alarm receives no /isotope/register call
 
+  # Two headless adhds are normal (one per lezz demo cluster). The mDNS instance
+  # label and the smoke-alarm registration name must therefore identify the
+  # instance, not the product: a shared "adhd" label makes browsers keyed by
+  # name collapse them, and the smoke-alarm registry — which keys by name — keeps
+  # only the last registration (james-gibson/adhd#48).
+  Scenario: two headless instances register and advertise under distinct names
+    Given two headless adhd instances register with the same smoke-alarm
+    When both advertise _adhd-isotope._tcp
+    Then each publishes a distinct instance label of the form adhd-<identity prefix>
+    And the smoke-alarm isotope registry holds an entry for each label
+
   Scenario: --force overrides the advertise guard for deliberate LAN discovery
     Given the config has mcp_server.addr="0.0.0.0:9090" and a smoke_alarm entry
     And adhd is started with --headless --force

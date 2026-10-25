@@ -83,7 +83,10 @@ In headless mode, adhd:
   endpoint in the config file**, so a config-file-driven deployment registers
   without a CLI flag
 - Receives a trust rung on the 42i capability lattice
-- Advertises `_adhd-isotope._tcp` via mDNS so other lab tools can discover it
+- Advertises `_adhd-isotope._tcp` via mDNS so other lab tools can discover it,
+  under an instance label derived from its per-process isotope identity
+  (`adhd-<8 chars>`, e.g. `adhd-Xq3vA9kL`) — so two instances on the same link
+  are two discoverable entries, not one name that browsers collapse
 
 ### The advertise guard (why registration can refuse)
 

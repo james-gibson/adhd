@@ -2,6 +2,7 @@ package demo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,22 +12,16 @@ import (
 	"time"
 )
 
-// TestBrowseFindsLocalRegistry is a regression test for the localhost HTTP
-// fallback in Browse. The fallback previously polled a non-resolvable
-// mDNS-style hostname ("_smoke-alarm.tcp") instead of the loopback address, so
-// discovery always failed even when a registry was listening on the same
-// machine. This test starts a registry on 127.0.0.1:DiscoveryPort and asserts
-// Browse finds it.
-//
-// The registry also answers /healthz, because the fallback trusts a registry
-// only while one of its alarms is alive (see hasLiveAlarm): the fixture's own
-// address stands in for the alarm.
-//
-// It skips when the well-known discovery port is already in use, since that
-// means a real registry (or another test) owns it.
-func TestBrowseFindsLocalRegistry(t *testing.T) {
+// startLocalRegistryFixture serves the two endpoints a localhost registry
+// needs: /cluster advertises one cluster whose own address stands in for a live
+// alarm, and /healthz answers for that alarm (see hasLiveAlarm). It skips when
+// the well-known port is already in use, since that means a real registry (or
+// another test) owns it.
+func startLocalRegistryFixture(t *testing.T) (alarmURL string) {
+	t.Helper()
+
 	addr := fmt.Sprintf("127.0.0.1:%d", DiscoveryPort)
-	alarmURL := "http://" + addr
+	alarmURL = "http://" + addr
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/cluster", func(w http.ResponseWriter, _ *http.Request) {
@@ -42,24 +37,78 @@ func TestBrowseFindsLocalRegistry(t *testing.T) {
 	if err != nil {
 		t.Skipf("discovery port %s unavailable: %v", addr, err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	go func() { _ = srv.Serve(listener) }()
-	defer func() { _ = srv.Close() }()
+
+	return alarmURL
+}
+
+// TestBrowseLocalRegistryFindsLoopbackRegistry is the regression test for the
+// localhost HTTP fallback: it used to poll a non-resolvable mDNS-style hostname
+// ("_smoke-alarm.tcp") instead of the loopback address, so discovery failed even
+// with a registry listening on the same machine.
+//
+// It targets the fallback directly rather than Browse. Browse races mDNS against
+// the fallback and returns whichever answers first, so on a machine with a live
+// demo cluster on the LAN the fallback is never consulted and its URL is not
+// exercised at all — a Browse-level assertion cannot pin this on such a machine.
+func TestBrowseLocalRegistryFindsLoopbackRegistry(t *testing.T) {
+	alarmURL := startLocalRegistryFixture(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	clusters, err := Browse(ctx, 3*time.Second)
+	clusters, err := browseLocalRegistry(ctx)
 	if err != nil {
-		t.Fatalf("Browse returned error: %v", err)
+		t.Fatalf("browseLocalRegistry returned error: %v", err)
 	}
 	if len(clusters) != 1 {
-		t.Fatalf("expected 1 cluster, got %d: %+v", len(clusters), clusters)
+		t.Fatalf("expected the fixture's 1 cluster, got %d: %+v", len(clusters), clusters)
 	}
 	if clusters[0].Name != "local" {
 		t.Fatalf("expected cluster %q, got %q", "local", clusters[0].Name)
 	}
 	if clusters[0].AlarmA != alarmURL {
 		t.Fatalf("unexpected alarm_a: %q", clusters[0].AlarmA)
+	}
+}
+
+// TestBrowseFindsClusters is the Browse-level contract: however discovery
+// answers — the fixture registry on loopback on a quiet machine, or real lezz
+// demo clusters on the LAN — it must return usable clusters rather than fail, or
+// hand back an entry a caller cannot configure adhd with.
+//
+// This deliberately does not assert "exactly one cluster". On a developer
+// machine with demo clusters running, mDNS legitimately finds all of them; that
+// is the code working, not the test's environment leaking in.
+func TestBrowseFindsClusters(t *testing.T) {
+	alarmURL := startLocalRegistryFixture(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	clusters, err := Browse(ctx, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Browse returned error: %v", err)
+	}
+	if len(clusters) == 0 {
+		t.Fatal("Browse returned no clusters and no error")
+	}
+	for _, c := range clusters {
+		if c.Name == "" {
+			t.Errorf("cluster has no name: %+v", c)
+		}
+		if c.AlarmA == "" && c.AlarmB == "" {
+			t.Errorf("cluster %q advertises no alarm to configure: %+v", c.Name, c)
+		}
+	}
+
+	// On a quiet machine the fixture is what discovery finds, so the fields are
+	// exact; on a busy one it only has to be one usable cluster among many.
+	if len(clusters) == 1 {
+		if clusters[0].Name != "local" || clusters[0].AlarmA != alarmURL {
+			t.Fatalf("expected the fixture cluster %q with alarm_a %q, got %+v", "local", alarmURL, clusters[0])
+		}
 	}
 }
 
@@ -175,6 +224,108 @@ func TestAlarmLiveFallsBackToLoopback(t *testing.T) {
 	advertised := "http://192.0.2.10:" + port
 	if !hasLiveAlarm(context.Background(), []ClusterInfo{{Name: "c", AlarmA: advertised}}) {
 		t.Fatalf("alarm advertised as %s should be found via loopback", advertised)
+	}
+}
+
+// TestRegistryProjectIDIsParsed covers the published registry contract: lezz
+// writes projects[].id — the seed id that namespaces the proxy tool — so the
+// mirrored ProjectEntry must carry it. Without the field the id is silently
+// dropped and every project is namespaced by its display name.
+func TestRegistryProjectIDIsParsed(t *testing.T) {
+	const body = `{"name":"demo-001","projects":[{"id":"01JABCDEF","name":"tuner","repo":"james-gibson/tuner","mcp_url":"http://127.0.0.1:9200/mcp"}]}`
+
+	var info ClusterInfo
+	if err := json.Unmarshal([]byte(body), &info); err != nil {
+		t.Fatalf("decode registry entry: %v", err)
+	}
+	if len(info.Projects) != 1 {
+		t.Fatalf("projects = %+v, want 1", info.Projects)
+	}
+	if info.Projects[0].ID != "01JABCDEF" {
+		t.Fatalf("project id dropped: %+v", info.Projects[0])
+	}
+}
+
+// TestRegistryProjectRouteIsNotAnIdentity pins the seed model: the seed id is
+// the stable project identity, while a route rotates. A registry entry that
+// also carries a route must still namespace the tool by the seed id, or the
+// tool name would churn every tick.
+func TestRegistryProjectRouteIsNotAnIdentity(t *testing.T) {
+	const body = `{"name":"demo-001","projects":[{"route":"route-a","id":"id-b","name":"tuner","mcp_url":"http://127.0.0.1:9200/mcp"}]}`
+
+	var info ClusterInfo
+	if err := json.Unmarshal([]byte(body), &info); err != nil {
+		t.Fatalf("decode registry entry: %v", err)
+	}
+	if len(info.Projects) != 1 {
+		t.Fatalf("projects = %+v, want 1", info.Projects)
+	}
+	dc := DiscoveredCluster(info)
+	if got := dc.Projects[0].ID; got != "id-b" {
+		t.Fatalf("project id = %q, want the seed id id-b", got)
+	}
+}
+
+// TestConfigFromClustersSurfacesProjects covers the automated project-context
+// path: a cluster advertising projects must have them carried in the config's
+// DiscoveredClusters. Without this, adhd --demo builds a config from the
+// registry and silently drops the cluster's adhd_mcp endpoint and projects, so
+// no adhd.project.<id>.call proxy tool is ever registered.
+func TestConfigFromClustersSurfacesProjects(t *testing.T) {
+	cfg := ConfigFromClusters([]ClusterInfo{
+		{
+			Name:    "demo-001",
+			AlarmA:  "http://192.168.1.10:9001",
+			AdhdMCP: "http://192.168.1.10:9100/mcp",
+			Projects: []ProjectEntry{
+				{ID: "01JABCDEF", Name: "tuner", Repo: "james-gibson/tuner", MCPURL: "http://192.168.1.10:9200/mcp"},
+				{Name: "legacy", Repo: "james-gibson/legacy", MCPURL: "http://192.168.1.10:9300/mcp"},
+			},
+		},
+	})
+
+	// The alarm endpoints keep the shape they always had.
+	if len(cfg.SmokeAlarm) != 1 || cfg.SmokeAlarm[0].Name != "alarm-a" {
+		t.Fatalf("SmokeAlarm = %+v, want one alarm-a endpoint", cfg.SmokeAlarm)
+	}
+
+	if len(cfg.DiscoveredClusters) != 1 {
+		t.Fatalf("DiscoveredClusters = %+v, want 1", cfg.DiscoveredClusters)
+	}
+	dc := cfg.DiscoveredClusters[0]
+	if dc.Name != "demo-001" {
+		t.Errorf("cluster name = %q, want demo-001", dc.Name)
+	}
+	if dc.AdhdMCP != "http://192.168.1.10:9100/mcp" {
+		t.Errorf("adhd_mcp dropped: %q", dc.AdhdMCP)
+	}
+	if len(dc.Projects) != 2 {
+		t.Fatalf("projects = %+v, want 2", dc.Projects)
+	}
+	if dc.Projects[0].ID != "01JABCDEF" || dc.Projects[0].Name != "tuner" ||
+		dc.Projects[0].Repo != "james-gibson/tuner" || dc.Projects[0].MCPURL != "http://192.168.1.10:9200/mcp" {
+		t.Errorf("project identity dropped: %+v", dc.Projects[0])
+	}
+	// A project without a seed id keeps it empty: the display name is used as
+	// the fallback at registration time, and only then is it non-explicit.
+	if dc.Projects[1].ID != "" {
+		t.Errorf("absent id should stay empty, got %q", dc.Projects[1].ID)
+	}
+}
+
+// TestConfigFromClustersWithoutProjectsKeepsClusterIdentity asserts the MCP
+// endpoint is still surfaced for a cluster that publishes no projects — the
+// peer remains addressable for path negotiation.
+func TestConfigFromClustersWithoutProjectsKeepsClusterIdentity(t *testing.T) {
+	cfg := ConfigFromClusters([]ClusterInfo{{Name: "demo-001", AdhdMCP: "http://192.168.1.10:9100/mcp"}})
+	if len(cfg.DiscoveredClusters) != 1 {
+		t.Fatalf("DiscoveredClusters = %+v, want 1", cfg.DiscoveredClusters)
+	}
+	if got := cfg.DiscoveredClusters[0].AdhdMCP; got != "http://192.168.1.10:9100/mcp" {
+		t.Fatalf("adhd_mcp = %q", got)
+	}
+	if got := cfg.DiscoveredClusters[0].Projects; len(got) != 0 {
+		t.Fatalf("projects = %+v, want none", got)
 	}
 }
 

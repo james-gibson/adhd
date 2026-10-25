@@ -6,8 +6,9 @@ Feature: External MCP Server Proxying (Manual Path)
   The system allows manual proxying of external MCP servers via adhd.proxy
   and via named project tools registered through adhd.cluster.join with projects.
 
-  The automated path (projects propagation via lezz/demo discovery) is
-  half-wired; these scenarios pin the manual contract that must hold.
+  The automated path (lezz demo publishes projects → adhd --demo carries them
+  in its discovered-cluster config) is covered by demo-mode.feature; these
+  scenarios pin the manual contract that must hold.
 
   Background:
     Given an ADHD MCP server is running with MCP server enabled
@@ -170,7 +171,39 @@ Feature: External MCP Server Proxying (Manual Path)
     When I call adhd.cluster.join again with the same project definition
     Then registration succeeds
     And adhd.project.machinewitness.call remains registered exactly once
-    And projects_registered count reflects the new join result
+    And projects_registered is 0 and projects_unchanged is 1
+
+  # ──────────────────────────────────────────────────────────────
+  # Identity: the route names the project, the name does not (adhd#40)
+  # ──────────────────────────────────────────────────────────────
+
+  Scenario: two clusters may each provide a project called "grep"
+    When clusters "alpha" and "beta" both join with projects:
+      | cluster | name | route                    | mcp_url                  |
+      | alpha   | grep | 20261019T210927-09001816 | http://127.0.0.1:9101/mcp |
+      | beta    | grep | 20261020T101010-0a0b0c0d | http://127.0.0.1:9102/mcp |
+    Then each join reports projects_registered 1
+    And tools/list includes "adhd.project.20261019T210927-09001816.call"
+    And tools/list includes "adhd.project.20261020T101010-0a0b0c0d.call"
+    And each tool proxies to its own cluster's MCP server
+
+  Scenario: a name collision with no route is reported, not silently dropped
+    When clusters "alpha" and "beta" both join with a project named "grep" and no route
+    Then the first join reports projects_registered 1
+    And the second join reports projects_registered 0
+    And the second join reports one conflict for "adhd.project.grep.call"
+    And tools/list includes "adhd.project.grep.call" exactly once
+
+  Scenario: a rejoin moves the project tool to the new endpoint
+    Given cluster "alpha" joined with project "grep" at route "route-1" on port A
+    When cluster "alpha" rejoins with project "grep" at route "route-1" on port B
+    Then the join reports projects_registered 1
+    And adhd.project.route-1.call proxies to port B
+
+  Scenario: project.route is preferred over the legacy seed id
+    When a cluster joins with project "grep" at route "r-1" and legacy id "old"
+    Then tools/list includes "adhd.project.r-1.call"
+    And tools/list does not include "adhd.project.old.call"
 
   Scenario: adhd.cluster.join accepts canonical project fields (name, repo, mcp_url)
     When I call adhd.cluster.join with projects containing:

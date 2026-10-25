@@ -197,6 +197,8 @@ func main() {
 		// first smoke_alarm entry. Registration is guarded: an unguarded
 		// (non-loopback) MCP endpoint is refused unless --force is passed, and
 		// refusal fails closed rather than shipping the offense.
+		var stopHeartbeat context.CancelFunc
+		var heartbeatDone chan struct{}
 		if smokeTarget != "" {
 			server.SetForceAdvertise(*forceFlag)
 			if err := server.RegisterAsIsotope(smokeTarget); err != nil {
@@ -208,6 +210,18 @@ func main() {
 				}
 				slog.Warn("failed to register as isotope", "error", err)
 			}
+
+			// Keep the registry entry live. smoke-alarm treats a registration as
+			// a heartbeat and sweeps a name it has not heard from, so a silent
+			// instance would stop resolving by name (smoke-alarm#35). The
+			// heartbeat also retries a registration that failed above.
+			heartbeatCtx, cancel := context.WithCancel(context.Background())
+			stopHeartbeat = cancel
+			heartbeatDone = make(chan struct{})
+			go func() {
+				defer close(heartbeatDone)
+				server.ServeIsotopeHeartbeat(heartbeatCtx, smokeTarget, headless.IsotopeHeartbeatInterval)
+			}()
 		}
 
 		// Keep running indefinitely (respond to signals)
@@ -216,6 +230,15 @@ func main() {
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		<-sigChan
 		slog.Info("shutting down")
+		if stopHeartbeat != nil {
+			stopHeartbeat()
+			// Wait for an in-flight beat to abort before deleting, or the
+			// registration could be re-created after deregistration.
+			<-heartbeatDone
+			// Best-effort: do not leave a name behind when the process can say
+			// goodbye. The TTL is the backstop if this fails.
+			server.DeregisterIsotope(smokeTarget)
+		}
 		if err := server.Shutdown(); err != nil {
 			slog.Warn("server shutdown error", "error", err)
 		}

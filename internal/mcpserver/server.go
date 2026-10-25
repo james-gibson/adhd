@@ -88,6 +88,10 @@ type dynamicTool struct {
 	fakeResult  interface{}
 	handler     func(ctx context.Context, params interface{}) (interface{}, *jsonrpcError)
 	cluster     string // owning cluster name if any
+	// origin is what backs the tool: the project's mcp_url, the repo slug, or
+	// the decoy's description. It is how a repeat registration is told apart
+	// from a different thing claiming the same name.
+	origin string
 }
 
 // clusterPeerInfo tracks a peer ADHD instance discovered via adhd.cluster.join.
@@ -784,10 +788,14 @@ func (s *Server) handleToolsList() interface{} {
 					},
 					"projects": map[string]interface{}{
 						"type":        "array",
-						"description": "Projects exposing an MCP server; each registers an adhd.project.<name>.call proxy tool",
+						"description": "Projects exposing an MCP server; each registers an adhd.project.<id>.call proxy tool, where <id> defaults to the project name",
 						"items": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
+								"id": map[string]interface{}{
+									"type":        "string",
+									"description": "Stable seed id that namespaces the tool; defaults to name. A route is not an id — it rotates",
+								},
 								"name":    map[string]interface{}{"type": "string"},
 								"repo":    map[string]interface{}{"type": "string"},
 								"mcp_url": map[string]interface{}{"type": "string"},
@@ -1471,7 +1479,10 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 	}
 
 	// Register per-repo Dependabot tools for any GitHub repos in this cluster.
-	var repoCount int
+	// Each counter counts what tools/list will show for this join: a repeat is
+	// reported as unchanged, not as a registration (adhd#40).
+	var repoCount, repoUnchanged int
+	var conflicts []joinConflict
 	reposRaw, reposOK := m["github_repos"]
 	if !reposOK {
 		reposRaw, reposOK = m["github.repos"]
@@ -1480,15 +1491,20 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 		if reposSlice, ok := reposRaw.([]interface{}); ok {
 			for _, r := range reposSlice {
 				if slug, ok := r.(string); ok && slug != "" {
-					s.registerRepoTool(p["name"], slug)
-					repoCount++
+					// The tool name is derived from the slug, so a repeat is the
+					// same tool serving the same repo; it can only be new or unchanged.
+					if s.registerRepoTool(p["name"], slug) == registrationAdded {
+						repoCount++
+					} else {
+						repoUnchanged++
+					}
 				}
 			}
 		}
 	}
 
 	// Register per-project MCP proxy tools for projects that expose an MCP server.
-	var projectCount int
+	var projectCount, projectUnchanged int
 	if projRaw, ok := m["projects"]; ok {
 		if projSlice, ok := projRaw.([]interface{}); ok {
 			for _, pj := range projSlice {
@@ -1499,13 +1515,22 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 				pjName, _ := pjMap["name"].(string)
 				pjRepo, _ := pjMap["repo"].(string)
 				pjMCP, _ := pjMap["mcp_url"].(string)
-				pjID, _ := pjMap["id"].(string)
-				if pjID == "" {
-					pjID = pjName
+				if pjName == "" || pjMCP == "" {
+					continue
 				}
-				if pjName != "" && pjMCP != "" {
-					s.registerProjectToolID(p["name"], pjID, pjName, pjRepo, pjMCP)
+				route, explicit := projectRoute(pjMap)
+				outcome := s.registerProjectToolID(p["name"], route, pjName, pjRepo, pjMCP, explicit)
+				switch outcome {
+				case registrationAdded, registrationReplaced:
 					projectCount++
+				case registrationUnchanged:
+					projectUnchanged++
+				case registrationConflict:
+					conflicts = append(conflicts, joinConflict{
+						Tool: "adhd.project." + sanitizeProjectRoute(route, pjName) + ".call",
+						Reason: "same tool name already reaches another MCP endpoint; " +
+							"send project.route so providers of one capability stay distinct",
+					})
 				}
 			}
 		}
@@ -1524,7 +1549,7 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 	s.mu.Unlock()
 
 	// Register honeypot tools sent by the joining cluster.
-	var honeypotCount int
+	var honeypotCount, honeypotUnchanged int
 	if hpRaw, ok := m["honeypot-tools"]; ok {
 		if hpSlice, ok := hpRaw.([]interface{}); ok {
 			for _, h := range hpSlice {
@@ -1537,8 +1562,17 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 				if hpName == "" {
 					continue
 				}
-				s.registerHoneypotTool(p["name"], hpName, hpDesc)
-				honeypotCount++
+				switch s.registerHoneypotTool(p["name"], hpName, hpDesc) {
+				case registrationAdded, registrationReplaced:
+					honeypotCount++
+				case registrationUnchanged:
+					honeypotUnchanged++
+				case registrationConflict:
+					conflicts = append(conflicts, joinConflict{
+						Tool:   hpName,
+						Reason: "decoy name already registered by another cluster",
+					})
+				}
 			}
 		}
 	}
@@ -1550,14 +1584,31 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 		"repos", repoCount,
 		"projects", projectCount,
 		"honeypots", honeypotCount,
+		"conflicts", len(conflicts),
 	)
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"accepted":            true,
 		"name":                p["name"],
 		"repos_registered":    repoCount,
 		"projects_registered": projectCount,
 		"honeypots_set":       honeypotCount,
-	}, nil
+	}
+	// Report repeats and refusals rather than folding them into the counts: a
+	// caller that pushed two providers of one capability must be able to see
+	// that one is not reachable.
+	if repoUnchanged > 0 {
+		result["repos_unchanged"] = repoUnchanged
+	}
+	if projectUnchanged > 0 {
+		result["projects_unchanged"] = projectUnchanged
+	}
+	if honeypotUnchanged > 0 {
+		result["honeypots_unchanged"] = honeypotUnchanged
+	}
+	if len(conflicts) > 0 {
+		result["conflicts"] = conflicts
+	}
+	return result, nil
 }
 
 // handleHurlRun executes a hurl script and returns pass/fail with output.
@@ -1745,8 +1796,9 @@ func (s *Server) fetchDependabotAlerts(ctx context.Context, repo, state string) 
 
 // registerRepoTool registers a per-repo adhd.dependabot.<owner>.<repo> tool for
 // a cluster that owns the given GitHub repo slug (e.g. "james-gibson/adhd").
-// Duplicate registrations are silently ignored.
-func (s *Server) registerRepoTool(clusterName, slug string) {
+// The name is derived from the slug, so a repeat registration is the same tool
+// serving the same repo and is reported as unchanged, not as a new one.
+func (s *Server) registerRepoTool(clusterName, slug string) registrationOutcome {
 	safeName := strings.ReplaceAll(slug, "/", ".")
 	toolName := "adhd.dependabot." + safeName
 
@@ -1754,13 +1806,14 @@ func (s *Server) registerRepoTool(clusterName, slug string) {
 	defer s.mu.Unlock()
 	for _, t := range s.dynamicTools {
 		if t.name == toolName {
-			return
+			return registrationUnchanged
 		}
 	}
 	capturedSlug := slug
 	s.dynamicTools = append(s.dynamicTools, &dynamicTool{
 		name:        toolName,
 		description: fmt.Sprintf("Fetch Dependabot alerts for %s (cluster: %s). Requires gh CLI.", slug, clusterName),
+		origin:      slug,
 		inputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -1782,6 +1835,7 @@ func (s *Server) registerRepoTool(clusterName, slug string) {
 		cluster: clusterName,
 	})
 	slog.Info("registered per-repo tool", "tool", toolName, "cluster", clusterName)
+	return registrationAdded
 }
 
 // registerHoneypotTool registers a decoy tool that looks legitimate but logs any caller
@@ -1808,19 +1862,40 @@ func (s *Server) registerRepoTool(clusterName, slug string) {
 // required, not incidental: an external sidecar verifies every hop against the
 // shared tick, so no hop vouches for itself. Simple example: A -> B -> C, each
 // with a different job.
-func (s *Server) registerHoneypotTool(clusterName, name, description string) {
+func (s *Server) registerHoneypotTool(clusterName, name, description string) registrationOutcome {
+	return s.registerDecoy(clusterName, name, description, map[string]interface{}{"ok": true})
+}
+
+// RegisterHoneypotTool is the exported version for external use (e.g. tests or demo setup).
+func (s *Server) RegisterHoneypotTool(name, description string, fakeResult interface{}) registrationOutcome {
+	return s.registerDecoy("", name, description, fakeResult)
+}
+
+// registerDecoy adds a honeypot. A decoy's name is authored by the joining
+// cluster, so a second cluster claiming the same name is either a repeat of the
+// same trap (unchanged) or a different one (conflict). It is never overwritten:
+// silently swapping a decoy's identity is how a detection surface is disarmed.
+func (s *Server) registerDecoy(clusterName, name, description string, fakeResult interface{}) registrationOutcome {
+	origin := description
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.dynamicTools {
-		if t.name == name {
-			return
+		if t.name != name {
+			continue
 		}
+		if t.honeypot && t.origin == origin {
+			return registrationUnchanged
+		}
+		slog.Warn("honeypot name collision",
+			"tool", name, "cluster", clusterName, "registered_by", t.cluster)
+		return registrationConflict
 	}
 	s.dynamicTools = append(s.dynamicTools, &dynamicTool{
 		name:        name,
 		description: description,
+		origin:      origin,
 		honeypot:    true,
-		fakeResult:  map[string]interface{}{"ok": true},
+		fakeResult:  fakeResult,
 		inputSchema: map[string]interface{}{
 			"type":       "object",
 			"properties": map[string]interface{}{},
@@ -1828,28 +1903,7 @@ func (s *Server) registerHoneypotTool(clusterName, name, description string) {
 		cluster: clusterName,
 	})
 	slog.Info("registered honeypot tool", "tool", name, "cluster", clusterName)
-}
-
-// RegisterHoneypotTool is the exported version for external use (e.g. tests or demo setup).
-func (s *Server) RegisterHoneypotTool(name, description string, fakeResult interface{}) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, t := range s.dynamicTools {
-		if t.name == name {
-			return
-		}
-	}
-	s.dynamicTools = append(s.dynamicTools, &dynamicTool{
-		name:        name,
-		description: description,
-		honeypot:    true,
-		fakeResult:  fakeResult,
-		inputSchema: map[string]interface{}{
-			"type":       "object",
-			"properties": map[string]interface{}{},
-		},
-		cluster: "",
-	})
+	return registrationAdded
 }
 
 // generateNonce returns a cryptographically random 16-byte hex nonce.
@@ -2448,22 +2502,6 @@ func safeReceipt(res map[string]interface{}) string {
 	return r
 }
 
-// findEndpointInPeers searches an adhd.isotope.peers result for a named isotope's endpoint.
-func findEndpointInPeers(topology map[string]interface{}, name string) string {
-	peers, _ := topology["peers"].([]interface{})
-	for _, p := range peers {
-		pm, ok := p.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if pm["name"] == name {
-			endpoint, _ := pm["endpoint"].(string)
-			return endpoint
-		}
-	}
-	return ""
-}
-
 // resolveTargetViaDiscovery resolves a target isotope by name, IP:port, or discovery URL.
 // It queries the discovery endpoint of known cluster peers to find the target.
 // Returns (endpoint, name) if found, or ("", targetIsotope) if not.
@@ -2539,41 +2577,134 @@ func (s *Server) resolveTargetViaDiscovery(ctx context.Context, targetIsotope st
 	return "", targetIsotope
 }
 
-// registerProjectTool registers an adhd.project.<name>.call dynamic tool that
-// proxies arbitrary JSON-RPC calls to the project's own MCP server.
-// Duplicate registrations (same tool name) are silently ignored.
-// registerProjectTool is the legacy entry point: the project name is the id.
-// New joins should pass a stable seed id so two projects with the same display
-// name do not collide (#40).
-func (s *Server) registerProjectTool(clusterName, projectName, repo, mcpURL string) {
-	s.registerProjectToolID(clusterName, projectName, projectName, repo, mcpURL)
+// registrationOutcome reports what a dynamic-tool registration actually did.
+// The join counters count added and replaced registrations only, so a count can
+// never exceed what tools/list shows (adhd#40: the join used to count a project
+// whose tool was silently dropped on a name clash).
+type registrationOutcome int
+
+const (
+	// registrationAdded is a new tool name.
+	registrationAdded registrationOutcome = iota
+	// registrationReplaced is an existing tool pointed at a new endpoint. A
+	// project's route is its identity, so the same route on a new URL is a
+	// rejoin (lezz demo restarts on a new port), not a second project.
+	registrationReplaced
+	// registrationUnchanged is an identical repeat registration.
+	registrationUnchanged
+	// registrationConflict is the same tool name for a different thing. It is
+	// never resolved by keeping the first one silently: the join reports it.
+	registrationConflict
+)
+
+// joinConflict is a registration that could not be honoured, reported to the
+// joining cluster so the caller learns the surface is not what it pushed.
+type joinConflict struct {
+	Tool   string `json:"tool"`
+	Reason string `json:"reason"`
 }
 
-// registerProjectToolID namespaces the dynamic tool by the project id, not the
-// display name. The name remains in the description.
-func (s *Server) registerProjectToolID(clusterName, projectID, projectName, repo, mcpURL string) {
-	projectID = sanitizeProjectID(projectID, projectName)
-	if projectName == "" {
-		projectName = projectID
+// RegisterDiscoveredClusters wires clusters discovered by `adhd --demo` into the
+// hosted MCP server: each project becomes an adhd.project.<id>.call proxy tool,
+// and each cluster's adhd_mcp endpoint becomes an addressable peer for path
+// negotiation. It is the config-driven counterpart of adhd.cluster.join, which
+// remains the push path used by lezz demo. Registration follows the same outcome
+// rules as a join: an identical repeat is unchanged, and a project whose seed id
+// moves to a new endpoint replaces its tool.
+func (s *Server) RegisterDiscoveredClusters(clusters []config.DiscoveredCluster) {
+	for _, c := range clusters {
+		if c.AdhdMCP != "" {
+			s.mu.Lock()
+			if s.clusterPeers == nil {
+				s.clusterPeers = make(map[string]*clusterPeerInfo)
+			}
+			if _, known := s.clusterPeers[c.Name]; !known {
+				s.clusterPeers[c.Name] = &clusterPeerInfo{
+					Name:     c.Name,
+					Endpoint: c.AdhdMCP,
+					JoinedAt: time.Now(),
+				}
+			}
+			s.mu.Unlock()
+		}
+		for _, p := range c.Projects {
+			if p.Name == "" || p.MCPURL == "" {
+				continue
+			}
+			// A published seed id is the project's identity. Without one the
+			// name is used as a fallback and is not explicit, so a name
+			// collision is reported rather than silently replacing another
+			// project's tool.
+			s.registerProjectToolID(c.Name, p.ID, p.Name, p.Repo, p.MCPURL, p.ID != "")
+		}
 	}
-	toolName := "adhd.project." + projectID + ".call"
+}
+
+// registerProjectTool is the legacy entry point: the display name is the route.
+// It is kept for callers that predate project.route (ADR lezz.go 0003), and a
+// name-only collision is reported as a conflict rather than dropped.
+func (s *Server) registerProjectTool(clusterName, projectName, repo, mcpURL string) registrationOutcome {
+	return s.registerProjectToolID(clusterName, projectName, projectName, repo, mcpURL, false)
+}
+
+// registerProjectToolID namespaces the dynamic tool by the project's route.
+//
+// explicitRoute distinguishes "this is the project's identity" from "we only
+// have a display name": the first may move an existing tool to a new endpoint,
+// the second must not, because it cannot tell a rejoin from a different project
+// that happens to share a name.
+func (s *Server) registerProjectToolID(clusterName, route, projectName, repo, mcpURL string, explicitRoute bool) registrationOutcome {
+	route = sanitizeProjectRoute(route, projectName)
+	if projectName == "" {
+		projectName = route
+	}
+	toolName := "adhd.project." + route + ".call"
+
+	newTool := s.newProjectTool(toolName, clusterName, projectName, repo, mcpURL)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, t := range s.dynamicTools {
-		if t.name == toolName {
-			return
+	for i, t := range s.dynamicTools {
+		if t.name != toolName {
+			continue
 		}
+		if t.origin == mcpURL {
+			return registrationUnchanged
+		}
+		if !explicitRoute {
+			slog.Warn("adhd.cluster.join project name collision",
+				"tool", toolName,
+				"cluster", clusterName,
+				"registered_by", t.cluster,
+				"reason", "no project.route in the join payload",
+			)
+			return registrationConflict
+		}
+		// The route names one project; the endpoint may change when it restarts.
+		s.dynamicTools[i] = newTool
+		slog.Info("replaced per-project proxy tool", "tool", toolName,
+			"cluster", clusterName, "mcp_url", mcpURL, "previous_cluster", t.cluster)
+		return registrationReplaced
 	}
+	s.dynamicTools = append(s.dynamicTools, newTool)
+	slog.Info("registered per-project proxy tool", "tool", toolName, "project", projectName,
+		"mcp_url", mcpURL, "cluster", clusterName)
+	return registrationAdded
+}
+
+// newProjectTool builds the proxy tool for one project. It is a fresh value so
+// a replacement never mutates a tool a concurrent call has already looked up.
+func (s *Server) newProjectTool(toolName, clusterName, projectName, repo, mcpURL string) *dynamicTool {
 	capturedURL := mcpURL
 	capturedProject := projectName
 	desc := fmt.Sprintf("Proxy JSON-RPC call to the %s MCP server (cluster: %s)", projectName, clusterName)
 	if repo != "" {
 		desc = fmt.Sprintf("Proxy JSON-RPC call to the %s MCP server — %s (cluster: %s)", projectName, repo, clusterName)
 	}
-	s.dynamicTools = append(s.dynamicTools, &dynamicTool{
+	return &dynamicTool{
 		name:        toolName,
 		description: desc,
+		origin:      mcpURL,
 		inputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -2607,14 +2738,28 @@ func (s *Server) registerProjectToolID(clusterName, projectID, projectName, repo
 			}
 			return result, nil
 		},
-	})
-	slog.Info("registered per-project proxy tool", "tool", toolName, "project", projectName, "mcp_url", mcpURL, "cluster", clusterName)
+		cluster: clusterName,
+	}
 }
 
-// sanitizeProjectID keeps the dynamic tool name addressable. A seed id is
-// expected to be a slug/ULID; anything else is reduced, and an empty result
-// falls back to the display name.
-func sanitizeProjectID(id, name string) string {
+// projectRoute returns the routing id for a joining project and whether it was
+// explicit. project.route is the field (ADR lezz.go 0003); the legacy seed.id is
+// read as an alias for one release, and only a payload with neither falls back
+// to the display name — which is exactly the collision #40 describes.
+func projectRoute(pj map[string]interface{}) (route string, explicit bool) {
+	for _, key := range []string{"route", "id"} {
+		if v, ok := pj[key].(string); ok && v != "" {
+			return v, true
+		}
+	}
+	name, _ := pj["name"].(string)
+	return name, false
+}
+
+// sanitizeProjectRoute keeps the dynamic tool name addressable. A route is
+// expected to be a slug or ULID (idPattern ^[A-Za-z0-9_.-]+$); anything else is
+// reduced, and an empty result falls back to the display name.
+func sanitizeProjectRoute(route, name string) string {
 	clean := func(v string) string {
 		var b strings.Builder
 		for _, r := range v {
@@ -2627,7 +2772,7 @@ func sanitizeProjectID(id, name string) string {
 		}
 		return strings.Trim(b.String(), "-")
 	}
-	if v := clean(id); v != "" {
+	if v := clean(route); v != "" {
 		return v
 	}
 	if v := clean(name); v != "" {

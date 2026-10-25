@@ -12,10 +12,35 @@ import (
 type Config struct {
 	MCPServer         MCPServerConfig       `yaml:"mcp_server"`
 	Health            HealthConfig          `yaml:"health"`
+	Project           ProjectConfig         `yaml:"project"`
 	SmokeAlarm        []SmokeAlarmEndpoint  `yaml:"smoke_alarm"`
 	MCPTargets        []MCPTarget           `yaml:"mcp_targets"`
 	Features          FeaturesConfig        `yaml:"features"`
 	CertifiedEndpoints []CertifiedEndpoint  `yaml:"certified_endpoints"`
+	// DiscoveredClusters carries the MCP-side context of lezz demo clusters
+	// found by `adhd --demo`: their adhd_mcp endpoints and projects. Their alarm
+	// endpoints are expanded into SmokeAlarm, which is the shape the watcher
+	// consumes; the MCP identity has no other representation, so dropping it
+	// silently drops the clusters' adhd.project.<id>.call proxy tools.
+	DiscoveredClusters []DiscoveredCluster `yaml:"discovered_clusters,omitempty"`
+}
+
+// DiscoveredCluster is a lezz demo cluster discovered by `adhd --demo`, or
+// added later by registry polling. It carries the cluster's MCP identity only —
+// the alarm endpoints live in SmokeAlarm.
+type DiscoveredCluster struct {
+	Name     string           `yaml:"name"`
+	AdhdMCP  string           `yaml:"adhd_mcp,omitempty"` // cluster's own MCP endpoint
+	Projects []ClusterProject `yaml:"projects,omitempty"`
+}
+
+// ClusterProject is a project inside a discovered cluster that exposes its own
+// MCP server. Each one becomes an adhd.project.<id>.call proxy tool.
+type ClusterProject struct {
+	ID     string `yaml:"id,omitempty"` // stable seed id; namespaces the tool
+	Name   string `yaml:"name"`
+	Repo   string `yaml:"repo,omitempty"`
+	MCPURL string `yaml:"mcp_url"`
 }
 
 // HealthConfig configures health monitoring
@@ -30,12 +55,29 @@ type MCPServerConfig struct {
 	SSEAddr string `yaml:"sse_addr"` // e.g., ":9091" for SSE (optional)
 }
 
+// ProjectConfig is this project's registry identity. Route is the lezz
+// `seed.json` project.route: a dependent resolves the project by it, not by the
+// endpoint it happens to be on. Contract is the signed spec id this instance
+// implements, if it declares one.
+type ProjectConfig struct {
+	Route    string `yaml:"route,omitempty"`
+	Contract string `yaml:"contract,omitempty"`
+}
+
 // SmokeAlarmEndpoint represents a monitored ocd-smoke-alarm instance
 type SmokeAlarmEndpoint struct {
 	Name     string        `yaml:"name"`
 	Endpoint string        `yaml:"endpoint"` // e.g., "http://localhost:8080"
 	Interval time.Duration `yaml:"interval"`
-	UseSSE   bool          `yaml:"use_sse"`  // subscribe to SSE stream
+	UseSSE   bool          `yaml:"use_sse"` // subscribe to SSE stream
+
+	// ProjectRoute and Contract pin the dependency this endpoint is: the route
+	// is where the smoke-alarm project lives (lezz seed.json project.route),
+	// and the contract is the signed spec it was built against. Both are
+	// published as a depends_on reference so another consumer can resolve the
+	// same project without a remembered URL.
+	ProjectRoute string `yaml:"project_route,omitempty"`
+	Contract     string `yaml:"contract,omitempty"`
 }
 
 // MCPTarget represents a direct MCP probe target

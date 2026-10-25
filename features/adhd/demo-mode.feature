@@ -73,6 +73,50 @@ Feature: ADHD Demo Mode Cluster Discovery
     When adhd builds the config via ConfigFromClusters
     Then smoke_alarm entry names are prefixed with their cluster name
     And the names follow the pattern "<cluster-name>/alarm-a" and "<cluster-name>/alarm-b"
+  # ── project context propagation ──────────────────────────────────────────────
+  # A cluster advertises the projects whose MCP servers it fronts. Those entries
+  # have no representation in smoke_alarm, so ConfigFromClusters carries them in
+  # discovered_clusters; dropping them silently drops the proxy tools.
+
+  Scenario: projects advertised by a discovered cluster become proxy tools
+    Given the cluster registry returns a cluster "demo-001" with an adhd_mcp endpoint
+    And that cluster advertises a project "tuner" with mcp_url "http://192.168.1.10:9200/mcp"
+    When adhd builds the config via ConfigFromClusters
+    Then the config carries the cluster's adhd_mcp endpoint
+    And the config carries the project "tuner" with its mcp_url intact
+    And adhd.project.tuner.call is registered on the hosted MCP server
+    And the tool description names the project and the cluster
+
+  Scenario: a project with a seed id is namespaced by that id, not the display name
+    Given a discovered cluster advertises a project with id "01JABCDEF" and name "tuner"
+    When adhd builds the config via ConfigFromClusters
+    Then the project keeps id "01JABCDEF" as its tool namespace
+    And the proxy tool is named adhd.project.01JABCDEF.call
+    And the tool description contains "tuner"
+
+  Scenario: the same seed id on a new endpoint replaces the project's proxy tool
+    Given a discovered cluster advertises project id "01JABCDEF" at "http://192.168.1.10:9200/mcp"
+    When the same cluster is discovered again with id "01JABCDEF" at "http://192.168.1.10:9400/mcp"
+    Then adhd.project.01JABCDEF.call remains registered exactly once
+    And it proxies to "http://192.168.1.10:9400/mcp"
+
+  Scenario: a discovered cluster with no projects still contributes its MCP peer
+    Given the cluster registry returns a cluster "demo-001" with an adhd_mcp endpoint and no projects
+    When adhd builds the config via ConfigFromClusters
+    Then the config carries the cluster's adhd_mcp endpoint
+    And no project proxy tools are registered
+    And the cluster is addressable by path negotiation
+
+  Scenario: a cluster that joins the registry after startup still gets its projects
+    Given adhd started with --demo and is polling the lezz demo registry
+    And a new cluster joins the registry advertising a project "tuner"
+    When the registry poll returns the new cluster
+    Then adhd.project.tuner.call is registered without a restart
+
+  Scenario: a project advertised without an mcp_url is not registered
+    Given a discovered cluster advertises a project with an empty mcp_url
+    When the hosted MCP server wires the discovered clusters
+    Then no adhd.project tool is registered for that entry
   # ── feature discovery in demo mode ───────────────────────────────────────────
   # Features are always loaded from the local filesystem, not from the remote
   # cluster. This is a deliberate design constraint: each adhd instance serves

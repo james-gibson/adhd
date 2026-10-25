@@ -6,11 +6,11 @@ package demo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/james-gibson/adhd/internal/config"
@@ -70,6 +70,9 @@ func RegistryURLForAlarm(alarmURL string) string {
 }
 
 // ProjectEntry describes a project within a cluster that exposes an MCP server.
+// ID is the seed id: the stable project identity shared by everyone working on
+// the project, and the value that namespaces adhd.project.<id>.call. It is not
+// a route — a route rotates.
 type ProjectEntry struct {
 	ID     string `json:"id,omitempty"` // stable seed id; namespaces the tool
 	Name   string `json:"name"`         // short name, e.g. "tuner", "adhd"
@@ -114,11 +117,6 @@ func Browse(ctx context.Context, timeout time.Duration) ([]ClusterInfo, error) {
 	}
 	ch := make(chan result, 2)
 
-	// staleRegistry records that the localhost registry answered but nothing
-	// behind it was alive, so the final error can name the ghost instead of
-	// suggesting no registry is running at all.
-	var staleRegistry atomic.Bool
-
 	// Strategy 1: mDNS.
 	go func() {
 		browser := discovery.NewBrowser()
@@ -144,44 +142,70 @@ func Browse(ctx context.Context, timeout time.Duration) ([]ClusterInfo, error) {
 		}
 	}()
 
-	// Strategy 2: direct localhost HTTP poll (same machine, mDNS may be unreliable).
+	// Strategy 2: direct localhost HTTP poll (same machine, mDNS may be
+	// unreliable). It lives in its own function so the regression it exists for
+	// — the registry URL — can be tested without a LAN mDNS answer racing it.
 	go func() {
-		ticker := time.NewTicker(pollInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-browseCtx.Done():
-				ch <- result{err: browseCtx.Err()}
-				return
-			case <-ticker.C:
-				clusters, err := fetchRegistry(browseCtx, RegistryURL("127.0.0.1", 0))
-				if err != nil || len(clusters) == 0 {
-					continue
-				}
-				if !hasLiveAlarm(browseCtx, clusters) {
-					staleRegistry.Store(true)
-					continue
-				}
-				ch <- result{clusters: clusters}
-				return
-			}
-		}
+		clusters, err := browseLocalRegistry(browseCtx)
+		ch <- result{clusters: clusters, err: err}
 	}()
 
 	// Return whichever strategy wins; ignore errors unless both fail.
 	var lastErr error
+	sawStaleRegistry := false
 	for range 2 {
 		r := <-ch
 		if r.err == nil {
 			return r.clusters, nil
 		}
+		if errors.Is(r.err, errStaleLocalRegistry) {
+			sawStaleRegistry = true
+		}
 		lastErr = r.err
 	}
 	err := fmt.Errorf("no lezz demo found on the LAN within %s — is lezz demo running? (%w)", timeout, lastErr)
-	if staleRegistry.Load() {
+	if sawStaleRegistry {
 		return nil, fmt.Errorf("%w; the local registry at %s advertised clusters but none of their alarms answered a health probe — stale registry entry", err, RegistryURL("127.0.0.1", 0))
 	}
 	return nil, err
+}
+
+// errStaleLocalRegistry marks a localhost registry that answered with clusters
+// whose alarms are all dead. It is a distinct error so Browse can name the ghost
+// in its message instead of suggesting no registry is running at all.
+var errStaleLocalRegistry = errors.New("local registry advertised clusters but none of their alarms answered a health probe")
+
+// browseLocalRegistry is Browse's localhost fallback: poll the well-known
+// registry until one answers with a cluster that has at least one live alarm.
+//
+// The URL is the point. This fallback used to poll an mDNS-style hostname that
+// could never resolve, so discovery failed even with a registry on the same
+// machine; keeping the poll here — rather than inline in Browse's race — is what
+// lets a test pin that without a real LAN cluster deciding who wins.
+func browseLocalRegistry(ctx context.Context) ([]ClusterInfo, error) {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	stale := false
+	for {
+		select {
+		case <-ctx.Done():
+			if stale {
+				return nil, fmt.Errorf("%w: %w", errStaleLocalRegistry, ctx.Err())
+			}
+			return nil, ctx.Err()
+		case <-ticker.C:
+			clusters, err := fetchRegistry(ctx, RegistryURL("127.0.0.1", 0))
+			if err != nil || len(clusters) == 0 {
+				continue
+			}
+			if !hasLiveAlarm(ctx, clusters) {
+				stale = true
+				continue
+			}
+			return clusters, nil
+		}
+	}
 }
 
 // hasLiveAlarm reports whether at least one alarm advertised by these clusters
@@ -238,12 +262,37 @@ func loopbackHost(base string) string {
 	return fmt.Sprintf("http://127.0.0.1:%s", u.Port())
 }
 
+// DiscoveredCluster returns the MCP-side view of c: its adhd_mcp endpoint and
+// project entries, in config form. Alarm endpoints are deliberately not
+// included — ConfigFromClusters expands those into SmokeAlarm.
+func DiscoveredCluster(c ClusterInfo) config.DiscoveredCluster {
+	dc := config.DiscoveredCluster{Name: c.Name, AdhdMCP: c.AdhdMCP}
+	for _, p := range c.Projects {
+		// The seed id is kept exactly as published. An absent one is not filled
+		// in here: the server treats a missing id as a display-name fallback,
+		// which must not be allowed to replace another project's tool.
+		dc.Projects = append(dc.Projects, config.ClusterProject{
+			ID:     p.ID,
+			Name:   p.Name,
+			Repo:   p.Repo,
+			MCPURL: p.MCPURL,
+		})
+	}
+	return dc
+}
+
 // ConfigFromClusters builds a *config.Config whose SmokeAlarm endpoints are
 // populated from the discovered clusters. Each cluster contributes alarm_a and
 // alarm_b; names are prefixed with the cluster name when there are multiple
-// clusters to avoid collisions.
+// clusters to avoid collisions. The clusters' MCP identity (adhd_mcp and
+// projects) is carried in DiscoveredClusters so the hosted MCP server can
+// register their proxy tools at startup instead of waiting for a push join.
 func ConfigFromClusters(clusters []ClusterInfo) *config.Config {
 	cfg := config.DefaultConfig()
+	cfg.DiscoveredClusters = make([]config.DiscoveredCluster, 0, len(clusters))
+	for _, c := range clusters {
+		cfg.DiscoveredClusters = append(cfg.DiscoveredClusters, DiscoveredCluster(c))
+	}
 	for _, c := range clusters {
 		prefix := ""
 		if len(clusters) > 1 {

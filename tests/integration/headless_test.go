@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -304,6 +305,17 @@ func TestHeadlessIsotopeRegistration(t *testing.T) {
 	if _, ok := registrationBody["trust_rung"]; ok {
 		t.Error("registration request must not include trust_rung: rung is server-assigned, not self-declared")
 	}
+
+	// The registered name must identify this instance, not the product: two
+	// headless instances that both register as "adhd" overwrite each other in
+	// the smoke-alarm registry, which keys by name (adhd#48).
+	name, _ := registrationBody["name"].(string)
+	if name == "" || name == "adhd" {
+		t.Fatalf("registration name = %q, want an instance label (<adhd>-<identity prefix>)", name)
+	}
+	if !strings.HasPrefix(name, "adhd-") || len(name) > 63 {
+		t.Fatalf("registration name = %q, want an %q instance label no longer than a DNS-SD label", name, "adhd-")
+	}
 }
 
 // TestHeadlessIsotopeRungIsServerAssigned verifies that ADHD uses the rung
@@ -335,6 +347,7 @@ func TestHeadlessIsotopeRungIsServerAssigned(t *testing.T) {
 		smokeAlarm.URL,
 		headless.RolePrime,
 		"localhost:0",
+		"adhd-test-rung",
 	)
 	if err != nil {
 		t.Fatalf("registration failed: %v", err)
@@ -434,7 +447,6 @@ func TestHeadlessEmptyCluster(t *testing.T) {
 	}
 }
 
-
 // TestHeadlessPushToUnreachablePrimeFails verifies graceful handling of unavailable prime
 func TestHeadlessPushToUnreachablePrimeFails(t *testing.T) {
 	cfg := &config.Config{
@@ -487,7 +499,6 @@ func TestHeadlessPushToUnreachablePrimeFails(t *testing.T) {
 		t.Errorf("expected 1 buffered log after failed push, got %d", stats.BufferedLogCount)
 	}
 }
-
 
 // TestHeadlessCircuitBreakerPattern verifies retry behavior under load
 func TestHeadlessCircuitBreakerPattern(t *testing.T) {

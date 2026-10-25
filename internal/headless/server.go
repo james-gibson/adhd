@@ -197,6 +197,11 @@ func (s *Server) Start(logPath string) error {
 	if s.cfg.MCPServer.Enabled {
 		s.mcpServer = mcpserver.NewServer(s.cfg.MCPServer, s.cluster)
 
+		// Wire clusters discovered by --demo before any join push arrives, so a
+		// headless instance started from a discovered config still exposes the
+		// clusters' adhd.project.<route>.call proxy tools.
+		s.mcpServer.RegisterDiscoveredClusters(s.cfg.DiscoveredClusters)
+
 		// Provide topology information to MCP server
 		s.mcpServer.SetTopologyProvider(s.GetTopologyInfo)
 		s.mcpServer.SetSpecFidelityProvider(s.GetSpecFidelity)
@@ -645,6 +650,49 @@ func (s *Server) handleIncomingPushLogs(logs []map[string]interface{}) error {
 	return nil
 }
 
+// Instance label shape. DNS-SD instance labels are limited to 63 bytes, and the
+// isotope identity is a 43-character base64url string (A–Z a–z 0–9 - _), all of
+// which is legal in a label. Eight characters is enough to be unique across a
+// LAN (2^-48) while staying readable in a service browser.
+const (
+	instanceLabelPrefix = "adhd-"
+	instanceLabelIDLen  = 8
+)
+
+// advertiseMDNS is the mDNS registration seam. Tests replace it to assert which
+// instance label is published without putting a record on the network.
+var advertiseMDNS = isotope.Advertise
+
+// instanceLabel returns the LAN-unique name this process registers and
+// advertises.
+//
+// A constant instance name ("adhd") is not an identity. Two headless instances
+// — one per lezz demo cluster, for instance — publish the same DNS-SD name, so
+// consumers keyed by name (`resolved[service.name]` in lezz.sea) collapse them
+// into one entry, and a deregistration from either removes both (adhd#48). The
+// isotope identity is already generated per process and already public — it
+// names the rung receipts — so the label derives from it: stable for the process
+// lifetime, and unique across the LAN rather than only across the host. A
+// port-derived label (`adhd-9190`) would collide again the moment two hosts use
+// the same port.
+//
+// smoke-alarm keys its isotope registry by name, so this label is used for the
+// registration as well as the advertisement: two instances must be two entries,
+// not one entry overwritten by whichever registered last.
+func (s *Server) instanceLabel() string {
+	if id := strings.TrimSpace(s.identity.Isotope); id != "" {
+		if len(id) > instanceLabelIDLen {
+			id = id[:instanceLabelIDLen]
+		}
+		return instanceLabelPrefix + id
+	}
+
+	// Defensive only: New always sets an identity. A pid is unique on this host
+	// but not across a LAN; it is still better than a constant that means "any
+	// adhd", which is the bug this function exists to prevent.
+	return fmt.Sprintf("%s%d", instanceLabelPrefix, os.Getpid())
+}
+
 // SetForceAdvertise bypasses the advertise guard for the deliberate
 // LAN-discovery case (e.g. `lezz demo`). It is an explicit operator override
 // and never the default: an unguarded non-loopback MCP endpoint that is
@@ -665,16 +713,11 @@ func (s *Server) RegisterAsIsotope(smokeAlarmURL string) error {
 	}
 
 	// Determine role for registration
-	role := s.role
-	if role == RoleStandalone {
-		if s.isPrimePlus {
-			role = RolePrimePlus
-		} else {
-			role = RolePrime
-		}
-	}
+	role := s.registrationRole()
 
-	rung, err := RegisterIsotopeWithRole(context.Background(), smokeAlarmURL, role, s.cfg.MCPServer.Addr)
+	label := s.instanceLabel()
+
+	rung, err := s.registerWithIdentity(context.Background(), smokeAlarmURL, role, label, s.cfg.MCPServer.Addr)
 	if err != nil {
 		return err
 	}
@@ -685,8 +728,11 @@ func (s *Server) RegisterAsIsotope(smokeAlarmURL string) error {
 		s.mcpServer.SetTrustLevel(rung)
 	}
 
-	// Advertise via mDNS so other nodes on the LAN can discover this isotope
-	if zSrv, mdnsErr := isotope.Advertise("adhd", "_adhd-isotope._tcp", s.cfg.MCPServer.Addr, string(role), rung); mdnsErr != nil {
+	// Advertise via mDNS so other nodes on the LAN can discover this isotope.
+	// The instance label is this instance, not the product name: a constant
+	// label makes two headless instances indistinguishable to every browser
+	// that keys by name (adhd#48).
+	if zSrv, mdnsErr := advertiseMDNS(label, "_adhd-isotope._tcp", s.cfg.MCPServer.Addr, string(role), rung); mdnsErr != nil {
 		slog.Warn("isotope mDNS advertisement failed", "error", mdnsErr)
 	} else {
 		s.mu.Lock()
