@@ -3,8 +3,10 @@ package headless
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/james-gibson/adhd/internal/mcpclient"
@@ -32,11 +34,11 @@ type IsotopePeer struct {
 
 // IsotopeTopology describes the current topology state
 type IsotopeTopology struct {
-	LocalRole   IsotopeRole   `json:"local_role"`
-	LocalName   string        `json:"local_name"`
-	PrimeAddr   string        `json:"prime_addr,omitempty"`
-	Peers       []IsotopePeer `json:"peers"`
-	DiscoveredAt time.Time    `json:"discovered_at"`
+	LocalRole    IsotopeRole   `json:"local_role"`
+	LocalName    string        `json:"local_name"`
+	PrimeAddr    string        `json:"prime_addr,omitempty"`
+	Peers        []IsotopePeer `json:"peers"`
+	DiscoveredAt time.Time     `json:"discovered_at"`
 }
 
 // DiscoverIsotopes queries smoke-alarm for all ADHD isotope peers
@@ -151,11 +153,23 @@ func AutoDiscoverPrime(ctx context.Context, smokeAlarmURL string) (string, error
 	return "", fmt.Errorf("no prime instance found in discovered isotopes")
 }
 
-// RegisterIsotopeWithRole registers this instance via smoke-alarm's REST /isotope/register
-// endpoint and returns the assigned trust rung (0 if registration fails).
-func RegisterIsotopeWithRole(ctx context.Context, smokeAlarmURL string, role IsotopeRole, localAddr string) (int, error) {
+// RegisterIsotopeWithRole registers this instance via smoke-alarm's REST
+// /isotope/register endpoint and returns the assigned trust rung (0 if
+// registration fails).
+//
+// name is the instance label, not the product name: smoke-alarm keys its isotope
+// registry by name, so a constant ("adhd") makes a second instance overwrite the
+// first and the list shows one entry for two live instances (adhd#48). It is
+// required rather than defaulted, because a silent default is how the constant
+// got there.
+func RegisterIsotopeWithRole(ctx context.Context, smokeAlarmURL string, role IsotopeRole, localAddr, name string) (int, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, errors.New("isotope registration name is required: a constant name lets two instances overwrite each other in the smoke-alarm registry (adhd#48)")
+	}
+
 	record, err := isotope.NewClient(smokeAlarmURL).Register(ctx, isotope.Registration{
-		Name:     "adhd",
+		Name:     name,
 		Role:     string(role),
 		Endpoint: localAddr,
 		Protocol: "mcp",
