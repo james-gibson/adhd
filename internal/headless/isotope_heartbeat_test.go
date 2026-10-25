@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,32 +15,46 @@ import (
 	"github.com/james-gibson/isotope"
 )
 
+// registryBody is the registration as it arrives: the shared fields plus the
+// project identity adhd publishes.
+type registryBody struct {
+	Name         string `json:"name"`
+	ProjectRoute string `json:"project_route"`
+	Contract     string `json:"contract"`
+	DependsOn    []struct {
+		ProjectRoute string `json:"project_route"`
+		Contract     string `json:"contract"`
+	} `json:"depends_on"`
+}
+
 // registryStub records the heartbeat traffic adhd sends to smoke-alarm.
 type registryStub struct {
 	posts   atomic.Int32
 	deletes atomic.Int32
 	names   chan string
+	bodies  chan registryBody
 }
 
 func newRegistryStub(t *testing.T) (*registryStub, *httptest.Server) {
 	t.Helper()
 
-	stub := &registryStub{names: make(chan string, 16)}
+	stub := &registryStub{names: make(chan string, 16), bodies: make(chan registryBody, 16)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/isotope/register", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		var reg isotope.Registration
+		var reg registryBody
 		if err := json.NewDecoder(r.Body).Decode(&reg); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		stub.posts.Add(1)
 		stub.names <- reg.Name
+		stub.bodies <- reg
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(isotope.Record{Name: reg.Name, Role: reg.Role, Endpoint: reg.Endpoint, TrustRung: 2})
+		_ = json.NewEncoder(w).Encode(isotope.Record{Name: reg.Name, Endpoint: "127.0.0.1:9999", TrustRung: 2})
 	})
 	mux.HandleFunc("/isotope/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
@@ -61,7 +77,15 @@ func TestServeIsotopeHeartbeatRenewsRegistration(t *testing.T) {
 	stub, registry := newRegistryStub(t)
 
 	server := &Server{
-		cfg:  &config.Config{MCPServer: config.MCPServerConfig{Addr: "127.0.0.1:9999"}},
+		cfg: &config.Config{
+			MCPServer: config.MCPServerConfig{Addr: "127.0.0.1:9999"},
+			Project:   config.ProjectConfig{Route: "01JADHD"},
+			SmokeAlarm: []config.SmokeAlarmEndpoint{{
+				Endpoint:     "http://127.0.0.1:6100",
+				ProjectRoute: "01JSMOKE",
+				Contract:     "smoke-alarm-isotope-registry-v1:bb021b6028b247ed",
+			}},
+		},
 		role: RolePrime,
 	}
 
@@ -94,6 +118,54 @@ func TestServeIsotopeHeartbeatRenewsRegistration(t *testing.T) {
 		if got := <-stub.names; got != wantName {
 			t.Fatalf("renewal registered %q, want the instance label %q", got, wantName)
 		}
+		body := <-stub.bodies
+		if body.ProjectRoute != "01JADHD" {
+			t.Fatalf("renewal lost the project route: %q", body.ProjectRoute)
+		}
+		if len(body.DependsOn) != 1 ||
+			body.DependsOn[0].ProjectRoute != "01JSMOKE" ||
+			body.DependsOn[0].Contract != "smoke-alarm-isotope-registry-v1:bb021b6028b247ed" {
+			t.Fatalf("renewal lost the dependency pin: %+v", body.DependsOn)
+		}
+	}
+}
+
+// The route is the project's stable id: config wins, then LEZZ_PROJECT_ROUTE,
+// then seed.json's project.route (seed.id only as the legacy alias).
+func TestProjectRoutePrecedence(t *testing.T) {
+	dir := t.TempDir()
+	seed := `{"version":1,"seed":{"id":"LEGACYID","surface":"base"},"project":{"name":"adhd","route":"01JSEED"}}`
+	if err := os.WriteFile(filepath.Join(dir, "seed.json"), []byte(seed), 0o600); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	t.Chdir(dir)
+	t.Setenv("LEZZ_PROJECT_ROUTE", "")
+
+	fromSeed := &Server{cfg: &config.Config{}}
+	if got := fromSeed.projectRoute(); got != "01JSEED" {
+		t.Fatalf("route = %q, want the seed file's project.route", got)
+	}
+
+	t.Setenv("LEZZ_PROJECT_ROUTE", "01JENV")
+	if got := fromSeed.projectRoute(); got != "01JENV" {
+		t.Fatalf("route = %q, want the environment override", got)
+	}
+
+	configured := &Server{cfg: &config.Config{Project: config.ProjectConfig{Route: "01JCONFIG"}}}
+	if got := configured.projectRoute(); got != "01JCONFIG" {
+		t.Fatalf("route = %q, want the configured route", got)
+	}
+}
+
+// The legacy alias is read only when project.route is absent.
+func TestSeedRouteFallsBackToLegacyID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "seed.json")
+	if err := os.WriteFile(path, []byte(`{"seed":{"id":"LEGACYID"},"project":{"name":"adhd"}}`), 0o600); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	if got := seedRouteFromFile(path); got != "LEGACYID" {
+		t.Fatalf("route = %q, want the legacy seed.id", got)
 	}
 }
 
