@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/james-gibson/adhd/internal/config"
 	"github.com/james-gibson/adhd/internal/lights"
 	"github.com/james-gibson/adhd/internal/mcpserver"
+	"github.com/james-gibson/adhd/internal/mirror"
 	"github.com/james-gibson/adhd/internal/smokelink"
 	"github.com/james-gibson/isotope"
 )
@@ -36,9 +39,32 @@ type Server struct {
 	zeroconfSrv  isotope.Server
 	identity     isotope.InstanceIdentity
 	forceAdvert  bool // --force: advertise even when the MCP bind is unguarded
+	mirrorWriter *mirror.Writer
+	mirrorBatch  *mirror.Batcher
 	mu           sync.Mutex
+	specMu       sync.Mutex
+	specScores   map[string]*specCallerScore
+	specSeq      uint64
 	ctx          context.Context
 	cancel       context.CancelFunc
+}
+
+// specCallerScore is the rolling request-conformance score for one caller.
+// It is a fitness signal, not an admission decision: callers are scored, never
+// rejected, because the cluster intentionally accepts the JSON minimum.
+type specCallerScore struct {
+	Caller   string    `json:"caller"`
+	Score    float64   `json:"score"`
+	Level    int       `json:"level"`
+	Samples  int       `json:"samples"`
+	LastSeen time.Time `json:"last_seen"`
+	// ChainRung is the verified rung of the caller's attestation chain. It is
+	// the only thing eviction ranks on: a score describes a caller's manners,
+	// not who vouched for it. Zero means unverified.
+	ChainRung int `json:"chain_rung"`
+	// Seq is a monotonic arrival order. Wall-clock ties are real under a
+	// coarsened clock, and eviction must not depend on map order.
+	Seq uint64 `json:"-"`
 }
 
 // MCPTrafficLog represents a single MCP request/response for JSONL output.
@@ -57,6 +83,13 @@ type MCPTrafficLog struct {
 	OldStatus string `json:"old_status,omitempty"`
 	NewStatus string `json:"new_status,omitempty"`
 	Via       string `json:"via,omitempty"` // "poll" or "sse"
+
+	// Request conformance (POST requests only). A fitness score, not a verdict:
+	// the cluster deliberately accepts the JSON minimum, and a lower score is
+	// recorded rather than a rejection.
+	SpecScore      int      `json:"spec_score,omitempty"`
+	SpecLevel      int      `json:"spec_level,omitempty"`
+	SpecViolations []string `json:"spec_violations,omitempty"`
 }
 
 // New creates a headless ADHD server
@@ -80,12 +113,13 @@ func New(cfg *config.Config) *Server {
 	}
 
 	return &Server{
-		cfg:      cfg,
-		cluster:  cluster,
-		ctx:      ctx,
-		cancel:   cancel,
-		role:     RoleStandalone, // Default role until configured
-		identity: isotope.NewInstanceIdentity(),
+		cfg:        cfg,
+		cluster:    cluster,
+		ctx:        ctx,
+		cancel:     cancel,
+		role:       RoleStandalone, // Default role until configured
+		specScores: make(map[string]*specCallerScore),
+		identity:   isotope.NewInstanceIdentity(),
 	}
 }
 
@@ -170,6 +204,7 @@ func (s *Server) Start(logPath string) error {
 
 		// Provide topology information to MCP server
 		s.mcpServer.SetTopologyProvider(s.GetTopologyInfo)
+		s.mcpServer.SetSpecFidelityProvider(s.GetSpecFidelity)
 
 		// Accept pushed logs from prime-plus isotopes
 		s.mcpServer.SetPushLogsHandler(s.handleIncomingPushLogs)
@@ -181,8 +216,24 @@ func (s *Server) Start(logPath string) error {
 			s.identity.VerifyReceipt,
 		)
 
+		// The proxy-hop tear sheet is a dynamic skill of the generation this
+		// process is: a new child gets a new surface, and the ledger it opens
+		// is the one its parent wrote.
+		s.mcpServer.RegisterProxyHopTearSkill()
+		s.mcpServer.RegisterRoutePlanSkill()
+		if path := os.Getenv("ADHD_TEAR_LEDGER_PATH"); path != "" {
+			if err := s.mcpServer.EnableTearLedger(path); err != nil {
+				return fmt.Errorf("tear ledger %s: %w", path, err)
+			}
+			slog.Info("tear ledger seeded", "path", path)
+		}
+
 		// Install traffic logging middleware before starting
 		s.mcpServer.SetMiddleware(s.trafficLoggingMiddleware())
+
+		// Mirror metadata to a backup node if one is configured. The feed is
+		// tick-batched and never carries request/response bodies.
+		s.startTrafficMirror()
 
 		if err := s.mcpServer.Start(s.ctx); err != nil {
 			return fmt.Errorf("failed to start MCP server: %w", err)
@@ -381,12 +432,22 @@ func (s *Server) trafficLoggingMiddleware() func(http.Handler) http.Handler {
 				method = rpc.Method
 			}
 
-			// Log request
-			_ = s.LogTraffic(MCPTrafficLog{
+			// Grade the request. This never rejects: the cluster intentionally
+			// accepts the JSON minimum, and the score is a fitness signal that
+			// ranks a caller by how close it is to JSON-RPC 2.0 / MCP.
+			reqLog := MCPTrafficLog{
 				Timestamp: time.Now().UTC(),
 				Type:      "request",
 				Method:    method,
-			})
+			}
+			if r.Method == http.MethodPost {
+				fidelity := mcpserver.ScoreRequest(r.Method, r.URL.Path, r.Header, reqBody)
+				s.recordSpecFidelity(r.RemoteAddr, fidelity)
+				reqLog.SpecScore = fidelity.Score
+				reqLog.SpecLevel = fidelity.Level
+				reqLog.SpecViolations = fidelity.Violations
+			}
+			_ = s.LogTraffic(reqLog)
 
 			// Capture response
 			rw := &responseWriter{ResponseWriter: w, code: http.StatusOK}
@@ -427,8 +488,118 @@ func (rw *responseWriter) WriteHeader(code int) {
 }
 
 func (rw *responseWriter) Write(b []byte) (int, error) {
-	rw.body.Write(b)
+	// SSE flows are long-lived; buffering them would grow without bound, and
+	// their body is not a JSON-RPC response to inspect.
+	if !strings.HasPrefix(rw.Header().Get("Content-Type"), "text/event-stream") {
+		rw.body.Write(b)
+	}
 	return rw.ResponseWriter.Write(b)
+}
+
+// Flush forwards to the underlying writer. Without this the handler's
+// http.Flusher assertion fails and GET /mcp returns 500 "Streaming not
+// supported" in headless mode.
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// recordSpecFidelity folds one request score into the caller's rolling score.
+// The caller is known only by address here, so it carries no chain and ranks as
+// unverified: an address is a claim that can change hands, and must never
+// outrank a chain.
+func (s *Server) recordSpecFidelity(remoteAddr string, f mcpserver.SpecFidelity) {
+	caller := remoteAddr
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		caller = host
+	}
+	s.recordChainedFidelity(caller, 0, f)
+}
+
+// recordChainedFidelity records a caller that arrived with a verified chain.
+// caller must be the verified identity, not an address: the rung ranks it, and
+// the score is only reported. The map is bounded to 256 entries; when it is
+// full the weakest chain is evicted, with unverified callers evicted first and
+// arrival order breaking ties.
+func (s *Server) recordChainedFidelity(caller string, chainRung int, f mcpserver.SpecFidelity) {
+
+	s.specMu.Lock()
+	defer s.specMu.Unlock()
+	if s.specScores == nil {
+		s.specScores = make(map[string]*specCallerScore)
+	}
+
+	entry := s.specScores[caller]
+	if entry == nil {
+		if len(s.specScores) >= 256 {
+			s.evictLeastTrusted()
+		}
+		entry = &specCallerScore{Caller: caller, Score: float64(f.Score), ChainRung: chainRung}
+		s.specScores[caller] = entry
+	} else {
+		// Exponentially weighted: recent behaviour dominates, but one bad
+		// knock does not erase a long compliant history.
+		entry.Score = 0.8*entry.Score + 0.2*float64(f.Score)
+	}
+	entry.Level = f.Level
+	entry.ChainRung = chainRung
+	entry.Samples++
+	entry.LastSeen = time.Now().UTC()
+	s.specSeq++
+	entry.Seq = s.specSeq
+}
+
+// evictLeastTrusted removes the entry with the weakest claim on the map.
+// Callers hold specMu.
+func (s *Server) evictLeastTrusted() {
+	victim := ""
+	for key, candidate := range s.specScores {
+		if victim == "" || lessTrusted(candidate, s.specScores[victim]) {
+			victim = key
+		}
+	}
+	if victim != "" {
+		delete(s.specScores, victim)
+	}
+}
+
+// lessTrusted orders two callers by the chain that vouches for them, then by
+// arrival. The request score is deliberately not an input: conformance is not
+// authorization, and a well-formed stranger is still a stranger.
+func lessTrusted(a, b *specCallerScore) bool {
+	if a.ChainRung != b.ChainRung {
+		return a.ChainRung < b.ChainRung
+	}
+	return a.Seq < b.Seq
+}
+
+// GetSpecFidelity summarizes the rolling request-conformance scores.
+func (s *Server) GetSpecFidelity() interface{} {
+	s.specMu.Lock()
+	defer s.specMu.Unlock()
+
+	callers := make([]specCallerScore, 0, len(s.specScores))
+	total := 0.0
+	for _, entry := range s.specScores {
+		callers = append(callers, *entry)
+		total += entry.Score
+	}
+	sort.Slice(callers, func(i, j int) bool {
+		if callers[i].Score == callers[j].Score {
+			return callers[i].Caller < callers[j].Caller
+		}
+		return callers[i].Score > callers[j].Score
+	})
+
+	average := 0.0
+	if len(callers) > 0 {
+		average = total / float64(len(callers))
+	}
+	return map[string]interface{}{
+		"average": average,
+		"callers": callers,
+	}
 }
 
 // LogTraffic writes an MCP traffic entry to the log as JSONL and queues for push to prime if configured
@@ -553,6 +724,9 @@ func (s *Server) RegisterAsIsotope(smokeAlarmURL string) error {
 	s.mu.Lock()
 	s.trustLevel = rung
 	s.mu.Unlock()
+	if s.mcpServer != nil {
+		s.mcpServer.SetTrustLevel(rung)
+	}
 
 	// Advertise via mDNS so other nodes on the LAN can discover this isotope.
 	// The instance label is this instance, not the product name: a constant
@@ -595,8 +769,42 @@ func (s *Server) AutoDiscoverPrime(smokeAlarmURL string) bool {
 }
 
 // Shutdown cleanly stops the headless server
+// startTrafficMirror wires the metadata mirror to a backup over a local Unix
+// datagram socket. Disabled unless ADHD_MIRROR_SOCKET names one.
+func (s *Server) startTrafficMirror() {
+	path := strings.TrimSpace(os.Getenv("ADHD_MIRROR_SOCKET"))
+	if path == "" || s.mcpServer == nil {
+		return
+	}
+	writer, err := mirror.Dial(path, 0, 5*time.Millisecond)
+	if err != nil {
+		slog.Warn("traffic mirror disabled", "error", err, "socket", path)
+		return
+	}
+	s.mirrorWriter = writer
+	s.mirrorBatch = mirror.NewBatcher(0)
+	s.mcpServer.SetMirrorSink(func(frame mirror.Frame) {
+		ready := s.mirrorBatch.Append(frame)
+		if ready == nil {
+			return
+		}
+		if sendErr := s.mirrorWriter.Send(*ready); sendErr != nil {
+			// The mirror is observability, not the request path: report and drop.
+			slog.Warn("traffic mirror backpressure", "error", sendErr, "tick", ready.Tick)
+		}
+	})
+	slog.Info("traffic mirror enabled", "socket", path)
+}
+
 func (s *Server) Shutdown() error {
 	s.cancel()
+
+	if s.mirrorBatch != nil && s.mirrorWriter != nil {
+		if tail := s.mirrorBatch.Flush(); tail != nil {
+			_ = s.mirrorWriter.Send(*tail)
+		}
+		_ = s.mirrorWriter.Close()
+	}
 
 	s.mu.Lock()
 	zSrv := s.zeroconfSrv
