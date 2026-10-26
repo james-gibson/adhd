@@ -546,7 +546,7 @@ func (s *Server) RegisterAsIsotope(smokeAlarmURL string) error {
 
 	label := s.instanceLabel()
 
-	rung, err := RegisterIsotopeWithRole(context.Background(), smokeAlarmURL, role, s.cfg.MCPServer.Addr, label)
+	rung, err := s.registerWithIdentity(context.Background(), smokeAlarmURL, role, label, s.cfg.MCPServer.Addr)
 	if err != nil {
 		return err
 	}

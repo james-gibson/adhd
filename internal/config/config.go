@@ -12,6 +12,7 @@ import (
 type Config struct {
 	MCPServer         MCPServerConfig       `yaml:"mcp_server"`
 	Health            HealthConfig          `yaml:"health"`
+	Project           ProjectConfig         `yaml:"project"`
 	SmokeAlarm        []SmokeAlarmEndpoint  `yaml:"smoke_alarm"`
 	MCPTargets        []MCPTarget           `yaml:"mcp_targets"`
 	Features          FeaturesConfig        `yaml:"features"`
@@ -54,12 +55,29 @@ type MCPServerConfig struct {
 	SSEAddr string `yaml:"sse_addr"` // e.g., ":9091" for SSE (optional)
 }
 
+// ProjectConfig is this project's registry identity. Route is the lezz
+// `seed.json` project.route: a dependent resolves the project by it, not by the
+// endpoint it happens to be on. Contract is the signed spec id this instance
+// implements, if it declares one.
+type ProjectConfig struct {
+	Route    string `yaml:"route,omitempty"`
+	Contract string `yaml:"contract,omitempty"`
+}
+
 // SmokeAlarmEndpoint represents a monitored ocd-smoke-alarm instance
 type SmokeAlarmEndpoint struct {
 	Name     string        `yaml:"name"`
 	Endpoint string        `yaml:"endpoint"` // e.g., "http://localhost:8080"
 	Interval time.Duration `yaml:"interval"`
-	UseSSE   bool          `yaml:"use_sse"`  // subscribe to SSE stream
+	UseSSE   bool          `yaml:"use_sse"` // subscribe to SSE stream
+
+	// ProjectRoute and Contract pin the dependency this endpoint is: the route
+	// is where the smoke-alarm project lives (lezz seed.json project.route),
+	// and the contract is the signed spec it was built against. Both are
+	// published as a depends_on reference so another consumer can resolve the
+	// same project without a remembered URL.
+	ProjectRoute string `yaml:"project_route,omitempty"`
+	Contract     string `yaml:"contract,omitempty"`
 }
 
 // MCPTarget represents a direct MCP probe target

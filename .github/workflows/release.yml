@@ -48,9 +48,79 @@ jobs:
       # Pinned to an exact GoReleaser release: a `~> v2` range floats to the
       # newest v2.x at run time, so a GoReleaser bump could change published
       # artifacts with no change to this repo. Bump deliberately.
+      # A tag must never publish unsigned darwin binaries. The notarize block in
+      # goreleaser.yaml is gated on MACOS_SIGN_P12, so an unset secret turns
+      # signing into a no-op instead of a failure — catch that here.
+      # Secrets are pushed by ~/projects/kb/scripts/codesign/setup-macos-signing-secrets.sh
+      - name: Require macOS signing material
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          missing=""
+          for var in MACOS_SIGN_P12 MACOS_SIGN_PASSWORD; do
+            if [ -z "${!var}" ]; then missing="$missing $var"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::refusing to publish unsigned darwin binaries — missing:$missing"
+            exit 1
+          fi
+          for var in MACOS_NOTARY_KEY MACOS_NOTARY_KEY_ID MACOS_NOTARY_ISSUER_ID; do
+            if [ -z "${!var}" ]; then
+              echo "::warning::darwin binaries will be signed but NOT notarized — $var is unset"
+            fi
+          done
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "v2.18.3"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+
+      # Assert the darwin binaries really carry a signature. GoReleaser fails
+      # loudly on a bad certificate, but this also catches a skipped signing
+      # step. quill is pinned and checksum-verified rather than curl | sh.
+      - name: Verify darwin code signatures
+        run: |
+          set -euo pipefail
+          version=0.7.1
+          name="quill_${version}_linux_amd64.tar.gz"
+          base="https://github.com/anchore/quill/releases/download/v${version}"
+          curl -fsSL -o "/tmp/${name}" "${base}/${name}"
+          curl -fsSL -o /tmp/quill-checksums.txt "${base}/quill_${version}_checksums.txt"
+          grep -F "  ${name}" /tmp/quill-checksums.txt > /tmp/quill-want.sum
+          (cd /tmp && sha256sum --check --strict quill-want.sum)
+          tar -xzf "/tmp/${name}" -C /tmp quill
+          sudo install -m 0755 /tmp/quill /usr/local/bin/quill
+
+          shopt -s nullglob
+          bins=(dist/*_darwin_*/*)
+          if [ ${#bins[@]} -eq 0 ]; then
+            echo "::error::no darwin binaries found under dist/"
+            exit 1
+          fi
+          for bin in "${bins[@]}"; do
+            [ -f "$bin" ] || continue
+            json=$(quill describe --output json "$bin" 2>/dev/null) || {
+              echo "::error::$bin could not be parsed by quill"
+              exit 1
+            }
+            # Go's darwin linker already applies an ad-hoc signature, so the
+            # presence of a superBlob proves nothing. A real Developer ID
+            # signature carries a CMS blob; ad-hoc signing leaves it empty.
+            if ! jq -e '.[0].superBlob.signatures[0].base64 | length > 0' <<<"$json" >/dev/null 2>&1; then
+              echo "::error::$bin is ad-hoc signed or unsigned, not Developer ID signed"
+              exit 1
+            fi
+            team=$(jq -r '.[0].superBlob.codeDirectories[0].teamID // ""' <<<"$json")
+            echo "signed: $bin (team: ${team:-unknown})"
+          done
