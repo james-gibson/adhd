@@ -45,15 +45,16 @@ func newRegistryStub(t *testing.T) (*registryStub, *httptest.Server) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		var reg isotope.Registration
+		var reg registryBody
 		if err := json.NewDecoder(r.Body).Decode(&reg); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		stub.posts.Add(1)
 		stub.names <- reg.Name
+		stub.bodies <- reg
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(isotope.Record{Name: reg.Name, Role: reg.Role, Endpoint: reg.Endpoint, TrustRung: 2})
+		_ = json.NewEncoder(w).Encode(isotope.Record{Name: reg.Name, Endpoint: "127.0.0.1:9999", TrustRung: 2})
 	})
 	mux.HandleFunc("/isotope/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
