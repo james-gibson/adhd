@@ -46,7 +46,6 @@ func newRegistryStub(t *testing.T) (*registryStub, *httptest.Server) {
 			return
 		}
 		var reg isotope.Registration
-		var reg registryBody
 		if err := json.NewDecoder(r.Body).Decode(&reg); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
