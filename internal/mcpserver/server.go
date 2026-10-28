@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -85,6 +86,10 @@ type dynamicTool struct {
 	description string
 	inputSchema map[string]interface{}
 	honeypot    bool
+	// sensitivity is the 42i distance at which this decoy's contacts become an
+	// alert. Zero means "any contact" — a silent honeypot, the default and the
+	// behaviour every decoy had before the threshold existed.
+	sensitivity int
 	fakeResult  interface{}
 	handler     func(ctx context.Context, params interface{}) (interface{}, *jsonrpcError)
 	cluster     string // owning cluster name if any
@@ -201,6 +206,12 @@ type Server struct {
 	// Dynamic per-repo tools registered on cluster join.
 	mu           sync.RWMutex
 	dynamicTools []*dynamicTool
+
+	// honeypotDistance is the 42i distance each caller has accumulated against
+	// the decoys on this host, keyed by caller address. A caller carries the
+	// distance: it is the caller's departure, not the decoy's, so it survives
+	// across decoys and across contacts with the same one.
+	honeypotDistance map[string]int
 
 	// Cluster peers discovered via adhd.cluster.join — used for path negotiation.
 	clusterPeers map[string]*clusterPeerInfo
@@ -348,6 +359,60 @@ func (s *Server) SetSecurityAlertHandler(h SecurityAlertHandler) {
 func (s *Server) SetScheduler(scheduler *smoketest.Scheduler) {
 	s.scheduler = scheduler
 	s.metricsAPI = metricsapi.NewAPI(scheduler)
+}
+
+// Contact weights, in 42i distance. A decoy is not hit one way: the same decoy
+// answers a direct method call and a tools/call, and the two say different
+// things about the caller. The scale is smoke-alarm's — a tool-proxy grades a
+// wrong or missing capability prefix at +16 and an unknown tool at +32
+// (smoke-alarm/internal/mcp_faults/tool_proxy.go) — read here for how the
+// contact was *made*:
+//
+//   - tools/call at the decoy: the advertised route, aimed at bait — the caller
+//     has no stamp for it, which is the +16 wrong-prefix case;
+//   - a direct method call at the decoy's name: a name invoked as a method the
+//     surface never offered as one — the +32 boundary case.
+//
+// The two weights are what make a threshold meaningful: set it above a single
+// tools/call and the caller is tolerated until it shows a second, worse signal.
+const (
+	contactViaToolsCall = 16
+	contactViaMethod    = 32
+)
+
+// callerHost is the address without the ephemeral port. A caller is an address,
+// not a connection: keying the accumulated distance on RemoteAddr would give
+// each new connection its own ledger, and a threshold could never be crossed by
+// a caller that reconnects (which is what a curl-shaped probe does).
+func callerHost(remoteAddr string) string {
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
+	}
+	return remoteAddr
+}
+
+// honeypotContact accounts for one contact with a decoy and reports whether it
+// crosses that decoy's sensitivity. Every contact is logged; only a crossing
+// fires the security alert. The distance accumulates per caller, so a caller
+// that knocks once and leaves stays below a threshold set above its knock, and
+// one that keeps probing crosses it.
+//
+// The threshold is a policy, not a measurement: 0 keeps the decoy silent on any
+// contact (the pre-threshold behaviour), and a value set from outside the cycle
+// (the join payload) is what the honeypotted node's operator decided in advance.
+func (s *Server) honeypotContact(decoy *dynamicTool, callerIP, via string, weight int) (distance, threshold int, fired bool) {
+	caller := callerHost(callerIP)
+	s.mu.Lock()
+	if s.honeypotDistance == nil {
+		s.honeypotDistance = map[string]int{}
+	}
+	s.honeypotDistance[caller] += weight
+	distance = s.honeypotDistance[caller]
+	threshold = decoy.sensitivity
+	s.mu.Unlock()
+
+	fired = threshold <= 0 || distance >= threshold
+	return distance, threshold, fired
 }
 
 // fireSecurity adds a red security light to the cluster and calls the handler.
@@ -530,15 +595,25 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 		if dynTool != nil {
 			if dynTool.honeypot {
 				callerIP, _ := r.Context().Value(callerIPKey{}).(string)
+				distance, threshold, fired := s.honeypotContact(dynTool, callerIP, "method", contactViaMethod)
 				slog.Warn("honeypot tool triggered",
 					"tool", req.Method,
 					"caller_ip", callerIP,
+					"via", "method",
+					"distance_42i", distance,
+					"threshold_42i", threshold,
+					"fired", fired,
 					"params", req.Params,
 				)
-				s.fireSecurity("warn", "honeypot_triggered", map[string]interface{}{
-					"tool":      req.Method,
-					"caller_ip": callerIP,
-				})
+				if fired {
+					s.fireSecurity("warn", "honeypot_triggered", map[string]interface{}{
+						"tool":          req.Method,
+						"caller_ip":     callerIP,
+						"via":           "method",
+						"distance_42i":  distance,
+						"threshold_42i": threshold,
+					})
+				}
 				result = dynTool.fakeResult
 			} else {
 				result, respErr = dynTool.handler(r.Context(), req.Params)
@@ -804,12 +879,17 @@ func (s *Server) handleToolsList() interface{} {
 					},
 					"honeypot-tools": map[string]interface{}{
 						"type":        "array",
-						"description": "Decoy tool descriptors to register. Callers who invoke these are logged as untrusted.",
+						"description": "Decoy tool descriptors to register. Callers who invoke these are logged as untrusted; the alert fires when a caller's accumulated 42i distance reaches the decoy's sensitivity.",
 						"items": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
 								"name":        map[string]interface{}{"type": "string"},
 								"description": map[string]interface{}{"type": "string"},
+								"sensitivity": map[string]interface{}{
+									"type":        "integer",
+									"minimum":     0,
+									"description": "42i distance at which contacts on this decoy become an alert: a tools/call costs 16, a direct method call costs 32, per caller. 0 or absent fires on any contact (a silent honeypot).",
+								},
 							},
 						},
 					},
@@ -1133,14 +1213,24 @@ func (s *Server) handleToolsCall(ctx context.Context, params interface{}) (inter
 		if dynTool != nil {
 			if dynTool.honeypot {
 				callerIP, _ := ctx.Value(callerIPKey{}).(string)
+				distance, threshold, fired := s.honeypotContact(dynTool, callerIP, "tools/call", contactViaToolsCall)
 				slog.Warn("honeypot tool triggered via tools/call",
 					"tool", toolName,
 					"caller_ip", callerIP,
+					"via", "tools/call",
+					"distance_42i", distance,
+					"threshold_42i", threshold,
+					"fired", fired,
 				)
-				s.fireSecurity("warn", "honeypot_triggered", map[string]interface{}{
-					"tool":      toolName,
-					"caller_ip": callerIP,
-				})
+				if fired {
+					s.fireSecurity("warn", "honeypot_triggered", map[string]interface{}{
+						"tool":          toolName,
+						"caller_ip":     callerIP,
+						"via":           "tools/call",
+						"distance_42i":  distance,
+						"threshold_42i": threshold,
+					})
+				}
 				result = dynTool.fakeResult
 			} else {
 				result, errResult = dynTool.handler(ctx, toolInput)
@@ -1550,6 +1640,7 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 
 	// Register honeypot tools sent by the joining cluster.
 	var honeypotCount, honeypotUnchanged int
+	armed := []map[string]interface{}{}
 	if hpRaw, ok := m["honeypot-tools"]; ok {
 		if hpSlice, ok := hpRaw.([]interface{}); ok {
 			for _, h := range hpSlice {
@@ -1562,11 +1653,34 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 				if hpName == "" {
 					continue
 				}
-				switch s.registerHoneypotTool(p["name"], hpName, hpDesc) {
+				// sensitivity is the 42i distance at which this decoy's contacts
+				// become an alert. Absent means 0: silent on any contact.
+				sensitivity := 0
+				if raw, ok := hpMap["sensitivity"]; ok {
+					f, isNum := raw.(float64)
+					if !isNum || f < 0 || f != float64(int(f)) {
+						conflicts = append(conflicts, joinConflict{
+							Tool: hpName,
+							Reason: "sensitivity must be a 42i distance (a non-negative integer); " +
+								"0 or absent means any contact fires",
+						})
+						continue
+					}
+					sensitivity = int(f)
+				}
+				switch s.registerHoneypotTool(p["name"], hpName, hpDesc, sensitivity) {
 				case registrationAdded, registrationReplaced:
 					honeypotCount++
+					armed = append(armed, map[string]interface{}{
+						"name":        hpName,
+						"sensitivity": sensitivity,
+					})
 				case registrationUnchanged:
 					honeypotUnchanged++
+					armed = append(armed, map[string]interface{}{
+						"name":        hpName,
+						"sensitivity": sensitivity,
+					})
 				case registrationConflict:
 					conflicts = append(conflicts, joinConflict{
 						Tool:   hpName,
@@ -1592,6 +1706,12 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 		"repos_registered":    repoCount,
 		"projects_registered": projectCount,
 		"honeypots_set":       honeypotCount,
+	}
+	// A trap's threshold is part of the wiring, so the host states it back: a
+	// caller that set a sensitivity can see what was armed, and one that set
+	// nothing sees the decoy is silent on any contact.
+	if len(armed) > 0 {
+		result["honeypots"] = armed
 	}
 	// Report repeats and refusals rather than folding them into the counts: a
 	// caller that pushed two providers of one capability must be able to see
@@ -1862,20 +1982,21 @@ func (s *Server) registerRepoTool(clusterName, slug string) registrationOutcome 
 // required, not incidental: an external sidecar verifies every hop against the
 // shared tick, so no hop vouches for itself. Simple example: A -> B -> C, each
 // with a different job.
-func (s *Server) registerHoneypotTool(clusterName, name, description string) registrationOutcome {
-	return s.registerDecoy(clusterName, name, description, map[string]interface{}{"ok": true})
+func (s *Server) registerHoneypotTool(clusterName, name, description string, sensitivity int) registrationOutcome {
+	return s.registerDecoy(clusterName, name, description, map[string]interface{}{"ok": true}, sensitivity)
 }
 
 // RegisterHoneypotTool is the exported version for external use (e.g. tests or demo setup).
+// It registers a silent decoy: sensitivity 0 means any contact fires.
 func (s *Server) RegisterHoneypotTool(name, description string, fakeResult interface{}) registrationOutcome {
-	return s.registerDecoy("", name, description, fakeResult)
+	return s.registerDecoy("", name, description, fakeResult, 0)
 }
 
 // registerDecoy adds a honeypot. A decoy's name is authored by the joining
 // cluster, so a second cluster claiming the same name is either a repeat of the
 // same trap (unchanged) or a different one (conflict). It is never overwritten:
 // silently swapping a decoy's identity is how a detection surface is disarmed.
-func (s *Server) registerDecoy(clusterName, name, description string, fakeResult interface{}) registrationOutcome {
+func (s *Server) registerDecoy(clusterName, name, description string, fakeResult interface{}, sensitivity int) registrationOutcome {
 	origin := description
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1883,11 +2004,12 @@ func (s *Server) registerDecoy(clusterName, name, description string, fakeResult
 		if t.name != name {
 			continue
 		}
-		if t.honeypot && t.origin == origin {
+		if t.honeypot && t.origin == origin && t.sensitivity == sensitivity {
 			return registrationUnchanged
 		}
 		slog.Warn("honeypot name collision",
-			"tool", name, "cluster", clusterName, "registered_by", t.cluster)
+			"tool", name, "cluster", clusterName, "registered_by", t.cluster,
+			"registered_sensitivity", t.sensitivity, "offered_sensitivity", sensitivity)
 		return registrationConflict
 	}
 	s.dynamicTools = append(s.dynamicTools, &dynamicTool{
@@ -1895,6 +2017,7 @@ func (s *Server) registerDecoy(clusterName, name, description string, fakeResult
 		description: description,
 		origin:      origin,
 		honeypot:    true,
+		sensitivity: sensitivity,
 		fakeResult:  fakeResult,
 		inputSchema: map[string]interface{}{
 			"type":       "object",
