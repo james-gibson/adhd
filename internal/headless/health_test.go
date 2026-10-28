@@ -106,7 +106,7 @@ func TestHeadlessStartsTheLocalObserverForANamedBinary(t *testing.T) {
 	}}
 
 	server := New(cfg)
-	t.Cleanup(server.cancel)
+	defer server.cancel()
 
 	if err := server.Start(""); err != nil {
 		t.Fatalf("headless Start: %v", err)
