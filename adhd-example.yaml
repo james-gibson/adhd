@@ -23,6 +23,17 @@ health:
 # ADHD probes each endpoint and traces failures back to specs
 #
 # Note: Relative paths are resolved relative to this config file's directory
+#
+# An endpoint is a URL or a registry name:
+#   endpoint: "http://127.0.0.1:9090/mcp"  # a fixed address
+#   endpoint: "workspace-42"               # a name, resolved through the
+#                                          # configured smoke_alarm's
+#                                          # /isotope/list on every probe, so a
+#                                          # surface on an ephemeral port is
+#                                          # followed across restarts
+# A name is a bare token (no scheme, port or path): a mistyped URL stays a URL
+# and fails as one. An unregistered name is RED; an alarm that does not answer
+# is YELLOW — the observer lost its directory, the surface may be fine.
 features:
   binaries:
     - name: smoke-alarm

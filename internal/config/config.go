@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -95,14 +97,40 @@ type FeaturesConfig struct {
 	Binaries    []Binary  `yaml:"binaries"`
 }
 
-// Binary represents a software binary that provides features
+// Binary represents a software binary that provides features.
+//
+// Endpoint is either a URL ("http://localhost:9090/mcp") or a registry name
+// ("workspace-42"). A name is resolved through the configured alarm's
+// /isotope/list on every probe, so a surface that binds an ephemeral port and
+// publishes itself by name can be watched without the harness injecting its
+// address (adhd#62). See EndpointName.
 type Binary struct {
 	Name          string        `yaml:"name"`
-	Endpoint      string        `yaml:"endpoint"`  // e.g., "http://localhost:9090"
+	Endpoint      string        `yaml:"endpoint"`  // URL, or a registry name (see EndpointName)
 	Features      []Feature     `yaml:"features"`
 	GherkinFiles  []string      `yaml:"gherkin_files"`  // .feature files this binary satisfies
 	Interval      time.Duration `yaml:"interval"`
 	Timeout       time.Duration `yaml:"timeout"`
+}
+
+// endpointName matches a bare registry name: one token, no scheme, no port, no
+// path.
+var endpointNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// EndpointName reports the registry name this binary is addressed by, when
+// Endpoint holds a name instead of a URL.
+//
+// A name is a bare token. A mistyped URL — "localhost:9090", "htp://host/mcp",
+// ":9090/mcp" — therefore stays a URL and fails as one, instead of silently
+// becoming a registry lookup that reports "not in the registry" for what is
+// really a typo. The cost is that a name may not contain a colon or a slash;
+// isotope names do not.
+func (b Binary) EndpointName() (string, bool) {
+	name := strings.TrimSpace(b.Endpoint)
+	if !endpointNameRE.MatchString(name) {
+		return "", false
+	}
+	return name, true
 }
 
 // Feature represents a feature provided by a binary
@@ -167,6 +195,22 @@ func DefaultConfig() *Config {
 			Binaries: []Binary{},
 		},
 	}
+}
+
+// RegistryEndpoint is where a binaries[].endpoint name is resolved: a
+// configured alarm, the shape that serves GET /isotope/list. The configured
+// smoke_alarm entries are preferred over health.remote_smoke_alarm because the
+// watcher already polls them over REST, so they are known to be HTTP endpoints;
+// remote_smoke_alarm is only a probe target and may be a discovery name. There
+// is no second, separate registry setting, so a name and the alarm's own view
+// cannot drift onto different registries.
+func (c *Config) RegistryEndpoint() string {
+	for _, alarm := range c.SmokeAlarm {
+		if ep := strings.TrimSpace(alarm.Endpoint); ep != "" {
+			return ep
+		}
+	}
+	return strings.TrimSpace(c.Health.RemoteSmokeAlarm)
 }
 
 // resolveRelativePaths converts relative paths to absolute, based on config file directory

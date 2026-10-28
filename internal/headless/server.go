@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/james-gibson/adhd/internal/config"
+	"github.com/james-gibson/adhd/internal/health"
 	"github.com/james-gibson/adhd/internal/lights"
 	"github.com/james-gibson/adhd/internal/mcpserver"
 	"github.com/james-gibson/adhd/internal/mirror"
@@ -29,6 +30,7 @@ type Server struct {
 	cluster      *lights.Cluster
 	mcpServer    *mcpserver.Server
 	smokeWatcher *smokelink.Watcher
+	healthMon    *health.Monitor
 	watchUpdates chan smokelink.LightUpdate // receives watcher events; set in Start()
 	logFile      *os.File
 	msgQueue     *MessageQueue
@@ -249,6 +251,24 @@ func (s *Server) Start(logPath string) error {
 	go s.drainWatcherUpdates(s.watchUpdates)
 	if len(s.cfg.SmokeAlarm) > 0 {
 		slog.Info("smoke-alarm watcher started", "endpoints", len(s.cfg.SmokeAlarm))
+	}
+
+	// Start the local observer. Headless mode is the deployment shape a
+	// per-workspace adhd runs in: without this the comment "each workspace is
+	// watched" is only the alarm's remote target check, and the yellow
+	// local/remote rung never exists for a workspace (adhd#62).
+	if len(s.cfg.Features.Binaries) > 0 {
+		s.healthMon = health.NewWithAlarms(
+			s.cfg.Features.Binaries,
+			s.cluster,
+			s.cfg.Health.RemoteSmokeAlarm,
+			s.cfg.RegistryEndpoint(),
+		)
+		go s.healthMon.Start(s.ctx)
+		slog.Info("local health monitor started",
+			"binaries", len(s.cfg.Features.Binaries),
+			"registry", s.cfg.RegistryEndpoint(),
+		)
 	}
 
 	// Wire cluster-join handler so lezz demo can push new endpoints via MCP.
