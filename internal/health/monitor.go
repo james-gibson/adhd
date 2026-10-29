@@ -13,25 +13,30 @@ import (
 
 // Monitor probes binary endpoints and updates light status
 type Monitor struct {
-	binaries      map[string]*config.Binary
-	lights        *lights.Cluster
-	probers       map[string]*localprobe.Prober
+	binaries       map[string]*config.Binary
+	lights         *lights.Cluster
+	probers        map[string]*localprobe.Prober
 	remoteAlarmURL string
-	mu            sync.RWMutex
+	registryURL    string
+	mu             sync.RWMutex
 }
 
 // New creates a new health monitor
 func New(binaries []config.Binary, cluster *lights.Cluster) *Monitor {
-	return NewWithRemoteAlarm(binaries, cluster, "")
+	return NewWithAlarms(binaries, cluster, "", "")
 }
 
-// NewWithRemoteAlarm creates a monitor that compares against a remote smoke-alarm
-func NewWithRemoteAlarm(binaries []config.Binary, cluster *lights.Cluster, remoteAlarmURL string) *Monitor {
+// NewWithAlarms creates a monitor that compares against a remote smoke-alarm
+// and resolves binaries[].endpoint names through the registry at registryURL.
+// An empty registryURL leaves a named endpoint unresolvable, which the light
+// reports; it does not fall back to a guessed address.
+func NewWithAlarms(binaries []config.Binary, cluster *lights.Cluster, remoteAlarmURL, registryURL string) *Monitor {
 	m := &Monitor{
 		binaries:       make(map[string]*config.Binary),
 		lights:         cluster,
 		probers:        make(map[string]*localprobe.Prober),
 		remoteAlarmURL: remoteAlarmURL,
+		registryURL:    registryURL,
 	}
 
 	// Index binaries by name and create probers
@@ -40,7 +45,7 @@ func NewWithRemoteAlarm(binaries []config.Binary, cluster *lights.Cluster, remot
 		m.binaries[bin.Name] = bin
 
 		// Create prober for this binary
-		prober := localprobe.New(bin, remoteAlarmURL)
+		prober := localprobe.NewWithRegistry(bin, remoteAlarmURL, registryURL)
 		m.probers[bin.Name] = prober
 	}
 
@@ -113,6 +118,12 @@ func (m *Monitor) probeEndpoint(ctx context.Context, bin *config.Binary, timeout
 			existing.SourceMeta = map[string]string{
 				"binary":   bin.Name,
 				"endpoint": bin.Endpoint,
+			}
+			if name, ok := bin.EndpointName(); ok && m.registryURL != "" {
+				// The address in endpoint is a name; say where it resolves, so a
+				// red light is not read as a dead URL.
+				existing.SourceMeta["registry"] = m.registryURL
+				existing.SourceMeta["isotope"] = name
 			}
 			m.lights.Add(existing)
 		}

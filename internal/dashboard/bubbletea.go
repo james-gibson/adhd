@@ -194,7 +194,7 @@ func NewBubbleTeaDashboard(cfg *config.Config) *BubbleTeaDashboard {
 	// Create health monitor for binary endpoints
 	var monitor interface{}
 	if len(cfg.Features.Binaries) > 0 {
-		monitor = health.NewWithRemoteAlarm(cfg.Features.Binaries, c, cfg.Health.RemoteSmokeAlarm)
+		monitor = health.NewWithAlarms(cfg.Features.Binaries, c, cfg.Health.RemoteSmokeAlarm, cfg.RegistryEndpoint())
 	}
 
 	// Create MCP server if enabled
