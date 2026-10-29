@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -290,14 +291,43 @@ func (s *Server) registrationRole() IsotopeRole {
 	return s.role
 }
 
+// Environment lezz uses to hand a cluster its launch secret. lezz mints one per
+// cluster and sets both variables on every process it spawns, so this instance
+// can prove which cluster it belongs to without the secret ever crossing the
+// wire (isotope#23).
+const (
+	EnvClusterID     = "LEZZ_CLUSTER_ID"
+	EnvClusterSecret = "LEZZ_CLUSTER_SECRET"
+)
+
+// clusterAttestation is the receipt this instance presents on registration: an
+// HMAC over the cluster identity and its own endpoint, signed with the secret
+// lezz handed it.
+//
+// Nil when either variable is unset, which is the honest answer for an instance
+// nobody launched as part of a cluster: the registration then stays at the
+// floor, because a self-declared endpoint is not evidence (isotope#23). The
+// receipt is rebuilt on every registration, including each heartbeat, because it
+// is timestamped and only valid inside the verifier's skew window.
+func clusterAttestation(endpoint string) *isotope.Attestation {
+	cluster := strings.TrimSpace(os.Getenv(EnvClusterID))
+	secret := os.Getenv(EnvClusterSecret)
+	if cluster == "" || secret == "" {
+		return nil
+	}
+	att := isotope.SignAttestation(secret, cluster, endpoint, time.Now())
+	return &att
+}
+
 // registerWithIdentity registers this instance with its project route and the
 // dependencies it pins, and returns the registry's trust rung.
 func (s *Server) registerWithIdentity(ctx context.Context, smokeAlarmURL string, role IsotopeRole, name, addr string) (int, error) {
 	record, err := RegisterIsotopeWithReferences(ctx, smokeAlarmURL, isotope.Registration{
-		Name:     name,
-		Role:     string(role),
-		Endpoint: addr,
-		Protocol: "mcp",
+		Name:        name,
+		Role:        string(role),
+		Endpoint:    addr,
+		Protocol:    "mcp",
+		Attestation: clusterAttestation(addr),
 	}, s.isotopeReferences())
 	if err != nil {
 		return 0, err

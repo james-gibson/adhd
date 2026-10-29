@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # Keep in sync with nothing else: this is the only place the version is named.
-OCD_SMOKE_ALARM_VERSION="${OCD_SMOKE_ALARM_VERSION:-v0.11.0}"
+OCD_SMOKE_ALARM_VERSION="${OCD_SMOKE_ALARM_VERSION:-v0.13.0}"
 SMOKE_ALARM_PKG="github.com/james-gibson/smoke-alarm/cmd/ocd-smoke-alarm"
 
 fail() {
