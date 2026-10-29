@@ -88,6 +88,10 @@ In headless mode, adhd:
   registration is a self-declared endpoint and the alarm puts it at the trust
   floor (isotope#23)
 - Receives a trust rung on the 42i capability lattice
+- Greets the first client with the lab's MOTD (`initialize.instructions`):
+  *Don't Panic. 42 is a coordinate, not a credential; trust is what you pinned.*
+  It is itself a signed test vector — `isotope/testdata/burned`, key
+  `zaphod-beeblebrox` — so the greeting can be checked rather than believed
 - Advertises `_adhd-isotope._tcp` via mDNS so other lab tools can discover it,
   under an instance label derived from its per-process isotope identity
   (`adhd-<8 chars>`, e.g. `adhd-Xq3vA9kL`) — so two instances on the same link

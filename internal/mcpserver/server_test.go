@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +108,18 @@ func TestServerInitialize(t *testing.T) {
 
 	if name, ok := serverInfo["name"].(string); !ok || name != "adhd" {
 		t.Error("invalid or missing server name")
+	}
+
+	// The handshake is the one greeting the protocol has: it should say what trust
+	// means here, and point at something the reader can verify.
+	instructions, ok := resultMap["instructions"].(string)
+	if !ok || instructions == "" {
+		t.Fatal("initialize carries no instructions")
+	}
+	for _, want := range []string{"Don't Panic", "isotope/testdata/burned", "don't believe it"} {
+		if !strings.Contains(instructions, want) {
+			t.Errorf("instructions do not mention %q: %q", want, instructions)
+		}
 	}
 }
 
