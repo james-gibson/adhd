@@ -82,6 +82,11 @@ In headless mode, adhd:
   `--smoke-alarm` flag when given, otherwise from the **first `smoke_alarm`
   endpoint in the config file**, so a config-file-driven deployment registers
   without a CLI flag
+- Sends a cluster **attestation** with the registration when lezz handed it one
+  (`LEZZ_CLUSTER_ID` + `LEZZ_CLUSTER_SECRET`): an HMAC receipt over that cluster
+  and this instance's endpoint, re-signed on every heartbeat. Without it the
+  registration is a self-declared endpoint and the alarm puts it at the trust
+  floor (isotope#23)
 - Receives a trust rung on the 42i capability lattice
 - Advertises `_adhd-isotope._tcp` via mDNS so other lab tools can discover it,
   under an instance label derived from its per-process isotope identity
