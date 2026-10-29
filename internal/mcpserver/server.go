@@ -712,8 +712,19 @@ func (s *Server) handleInitialize() interface{} {
 		"capabilities": map[string]interface{}{
 			"tools": map[string]interface{}{},
 		},
+		// The first message a workspace user — or their agent — gets from this
+		// surface. It is the lab's MOTD, and it is itself a signed test vector
+		// (isotope/testdata/burned, key: zaphod-beeblebrox), so the greeting
+		// demonstrates the model it describes: check it, don't believe it.
+		"instructions": Motd,
 	}
 }
+
+// Motd is the greeting a workspace user gets when they connect. Kept identical to
+// lezz's `lezz motd` so the human path and the agent path say the same thing.
+const Motd = "Don't Panic. 42 is a coordinate, not a credential; trust is what you pinned.\n" +
+	"This greeting is a signed test vector (isotope/testdata/burned, key: zaphod-beeblebrox), " +
+	"so anyone can check it and nobody has to trust it. Verify it; don't believe it."
 
 // handleToolsList returns available tools (static + runtime-registered per-repo tools)
 func (s *Server) handleToolsList() interface{} {
