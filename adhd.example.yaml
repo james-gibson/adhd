@@ -6,6 +6,36 @@ mcp_server:
   enabled: true
   addr: ":9090"
 
+  # Inbound entitlement gate (adhd#27). Off by default: every client that works
+  # today would otherwise be locked out at once. When on, a caller without a
+  # capability sees an empty adhd (no tools, no peers, no lights) and every real
+  # call files `unentitled_tool_call` instead of executing.
+  #
+  # The keyring is a local 0600 file created on first start:
+  #   {"keys":[{"id":"read","key":"…","rung":0},
+  #            {"id":"write","key":"…","rung":3},
+  #            {"id":"exec","key":"…","rung":6}]}
+  # A caller presents `Authorization: Bearer <kid>.<secret>` or a signed
+  # `_shield` member, the same contract as kb/scripts/cluster/shield_gate.py.
+  gate:
+    enabled: false
+    key_file: ~/.config/adhd/gate.key
+    period: 30s                      # tumble epoch; current and previous accepted
+
+# Named MCP stdio servers (adhd#41). Each is launched on demand and addressed by
+# name; no request field can name or construct a command. The parent environment
+# is NOT inherited — list what the child may see in inherit_env.
+stdio_targets: []
+  # - name: qdrant
+  #   command: uvx
+  #   args: ["mcp-server-qdrant"]
+  #   inherit_env: [PATH, HOME]
+  #   env:
+  #     QDRANT_URL: "http://127.0.0.1:6333"
+  #   cwd: ""
+  #   allowed_tools: ["qdrant-find"]   # empty = every tool the server publishes
+  #   timeout: 30s
+
 health:
   remote_smoke_alarm: ""
 

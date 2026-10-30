@@ -91,7 +91,7 @@ func TestHandlePRCacheUnconfigured(t *testing.T) {
 
 func TestToolsListIncludesPR(t *testing.T) {
 	s := &Server{}
-	data, err := json.Marshal(s.handleToolsList())
+	data, err := json.Marshal(s.handleToolsList(capDanger))
 	if err != nil {
 		t.Fatal(err)
 	}

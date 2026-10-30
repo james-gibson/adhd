@@ -77,6 +77,12 @@ func NewWithConfig(cfg *config.Config) *Dashboard {
 	if cfg.MCPServer.Enabled {
 		mcpServer = mcpserver.NewServer(cfg.MCPServer, c)
 		mcpServer.RegisterDiscoveredClusters(cfg.DiscoveredClusters)
+		if err := mcpserver.Attach(mcpServer, cfg); err != nil {
+			// Fail closed: a surface whose gate cannot load must not be served
+			// open.
+			slog.Error("refusing to serve MCP: failed to attach surfaces", "error", err)
+			mcpServer = nil
+		}
 		slog.Info("MCP server configured", "addr", cfg.MCPServer.Addr)
 	}
 

@@ -25,7 +25,7 @@ func TestRegisterDiscoveredClustersWiresProjectsAndPeer(t *testing.T) {
 	s := &Server{}
 	s.RegisterDiscoveredClusters(clusters)
 
-	data, err := json.Marshal(s.handleToolsList())
+	data, err := json.Marshal(s.handleToolsList(capDanger))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestRegisterDiscoveredClustersWiresProjectsAndPeer(t *testing.T) {
 
 	// Re-registration must not duplicate the dynamic tool.
 	s.RegisterDiscoveredClusters(clusters)
-	data, err = json.Marshal(s.handleToolsList())
+	data, err = json.Marshal(s.handleToolsList(capDanger))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestRegisterDiscoveredClusterMovesProjectOnNewEndpoint(t *testing.T) {
 		Name: "demo-001", AdhdMCP: "http://127.0.0.1:9100/mcp", Projects: []config.ClusterProject{project},
 	}})
 
-	data, err := json.Marshal(s.handleToolsList())
+	data, err := json.Marshal(s.handleToolsList(capDanger))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestRegisterDiscoveredClusterWithoutProjects(t *testing.T) {
 	if _, ok := s.clusterPeers["demo-002"]; !ok {
 		t.Fatalf("cluster peer not recorded: %+v", s.clusterPeers)
 	}
-	data, err := json.Marshal(s.handleToolsList())
+	data, err := json.Marshal(s.handleToolsList(capDanger))
 	if err != nil {
 		t.Fatal(err)
 	}

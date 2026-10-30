@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"syscall"
 
@@ -33,6 +34,8 @@ var (
 	mcpAddrFlag    = flag.String("mcp-addr", "", "override MCP server address (e.g., :0 for random port)")
 	demoFlag       = flag.Bool("demo", false, "discover a lezz demo cluster via mDNS instead of loading config")
 	forceFlag      = flag.Bool("force", false, "advertise/register even if the MCP endpoint is unguarded (non-loopback) — an explicit LAN-discovery override")
+	gateFlag       = flag.Bool("gate", false, "require an inbound capability; an unentitled caller sees an empty facade and files unentitled_tool_call")
+	gateKeyFlag    = flag.String("gate-key", "", "keyring path for the inbound gate (implies --gate; default ~/.config/adhd/gate.key)")
 )
 
 // resolveSmokeAlarm picks the smoke-alarm endpoint to register with. The
@@ -63,6 +66,24 @@ func enableMCPForAddr(cfg *config.Config, addr string) {
 	}
 	cfg.MCPServer.Enabled = true
 	cfg.MCPServer.Addr = addr
+}
+
+// applyGateFlags turns the gate flags into configuration. Supplying a keyring
+// path is itself a request to gate: the alternative is a flag that silently
+// does nothing because the operator forgot the second one.
+func applyGateFlags(cfg *config.Config, enabled bool, keyFile string) {
+	if !enabled && keyFile == "" {
+		return
+	}
+	cfg.MCPServer.Gate.Enabled = true
+	if keyFile != "" {
+		cfg.MCPServer.Gate.KeyFile = keyFile
+	}
+	if cfg.MCPServer.Gate.KeyFile == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			cfg.MCPServer.Gate.KeyFile = filepath.Join(home, ".config", "adhd", "gate.key")
+		}
+	}
 }
 
 func main() {
@@ -117,6 +138,8 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	applyGateFlags(cfg, *gateFlag, *gateKeyFlag)
 
 	if cfg.IsNetworkingEnabled() {
 		slog.Info("network integration enabled", "endpoints", len(cfg.SmokeAlarm), "mcp_server", cfg.MCPServer.Enabled)

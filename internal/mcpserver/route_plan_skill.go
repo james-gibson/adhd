@@ -44,6 +44,7 @@ func (s *Server) RegisterRoutePlanSkillAs(name string) {
 	}
 	s.dynamicTools = append(s.dynamicTools, &dynamicTool{
 		name:        name,
+		tier:        capExec,
 		description: "Resolve a target isotope to one callable hop chain. Returns the segments for adhd.path.call, the hop list, the tick and the minimum rung.",
 		inputSchema: map[string]interface{}{
 			"type": "object",

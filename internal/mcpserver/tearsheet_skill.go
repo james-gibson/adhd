@@ -32,6 +32,7 @@ func (s *Server) RegisterProxyHopTearSkillAs(name string) {
 	}
 	s.dynamicTools = append(s.dynamicTools, &dynamicTool{
 		name:        name,
+		tier:        capExec,
 		description: "Tear one hop off a proxy tear sheet and execute it. Each hop is single-use: a redeemed ticket is refused and alerted, not retried.",
 		inputSchema: map[string]interface{}{
 			"type": "object",

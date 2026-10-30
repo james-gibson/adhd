@@ -7,26 +7,33 @@ behind an assumption — if a protection is a presumption, it is written here as
 presumption.
 
 The surface is the fire marshal's: smoke-alarm's, reached by proxy through adhd
-with the isotopes' help. adhd has **no inbound authentication**; `handleMCPRPC`
-injects the caller IP for audit and honeypot purposes only.
+with the isotopes' help. adhd has an inbound entitlement gate, and it is **off
+unless `mcp_server.gate.enabled` is set** (or `--gate` / `--gate-key` is passed).
+With it off, the pre-gate contract stands: reachable ⇒ driveable.
 
 ## What is true today (verified against the tree)
 
 | Property | State |
 | --- | --- |
-| Inbound auth / trust check on RPC dispatch | **none** — `handleMCPRPC` dispatches on method alone |
-| `initialize` / `tools/list` | unconditional; full real tool surface to any caller |
+| Inbound auth / trust check on RPC dispatch | capability gate when `mcp_server.gate.enabled`; **none** otherwise (#27) |
+| `initialize` / `tools/list` | gated: an unentitled caller gets an empty facade; a capability sees only its tier |
 | Honeypots | only for tools pushed in by a `adhd.cluster.join`; real tools are not decoys |
-| Security events filed | `honeypot_triggered` and `rung_challenge_failed` only |
-| `adhd.proxy` | accepts a **caller-supplied** `target_endpoint` + `auth` (bearer/api-key/oauth2) |
-| Host / `Origin` validation | **none** |
+| Security events filed | `honeypot_triggered`, `rung_challenge_failed`, `unentitled_tool_call`, `stdio_knock` |
+| `adhd.proxy` | accepts a **caller-supplied** `target_endpoint` + `auth` — but only for an exec-tier caller, and **URL-only**: a `stdio:` target or a `command`/`args` field is refused and filed as a knock (#41) |
+| Stdio transport | named targets from local config only; no request field can name or construct a command (#41) |
+| Host / `Origin` validation | **none** (#29) |
 | Caller attribution | `r.RemoteAddr` at the tool surface only; the ingress session entry id is not carried |
 | Isotope registration | follows config, flag overrides (#26) |
 | Advertise guard | refuses an unguarded non-loopback bind unless `--force` (#26) |
 | Protocol version | not a gate; `initialize` ignores the client's revision (#28) |
 
-Consequence: **reachable ⇒ driveable.** The "empty facade / only real isotopes
-get responses" posture is *not implemented* — it is tracked in #27.
+Consequence with the gate **off**: **reachable ⇒ driveable.** With it **on**:
+reachable ⇒ an empty facade, and driving it files `unentitled_tool_call`.
+
+The gate is a **capability with a rung**, not an isotope-certified identity, and
+the tiers are kb's shield-gate contract (`R/C 0, W 3, E 4, X 6`). A key is a
+local file (0600) whose keys carry a maximum rung; a signed `_shield` member or
+a bearer `<kid>.<secret>` presents it. Unknown methods are tier 6, never read.
 
 ## Simple exploits to know about
 
@@ -47,9 +54,10 @@ matter.
 4. **Side effects as the adhd user.** `adhd.gh.run` and `adhd.hurl.run` execute
    with adhd's privileges and ambient credentials. "Read-only-looking" is not
    read-only.
-5. **Honeypot evasion.** An attacker who ignores the decoys and calls the real
-   tools is never logged and files nothing — the panel has a trap for the naive
-   and no alarm for the deliberate.
+5. **Honeypot evasion.** With the gate off, an attacker who ignores the decoys
+   and calls the real tools is never logged and files nothing — the panel has a
+   trap for the naive and no alarm for the deliberate. With the gate on, a
+   refusal files `unentitled_tool_call`, so the same attempt is the alarm.
 6. **Attribution defeat.** Under (2) the logged caller address is `127.0.0.1`, so
    the knock's caller-IP record is worthless for a rebound caller. The intended
    fix is *not* a better IP source: **golden attribution is the entry id of the
@@ -85,18 +93,78 @@ Three properties must be kept straight:
   attribution, not secrecy, and it stays an asset only while the phases measure
   rather than authorize.
 
-## Intended design (not yet implemented)
+## What is implemented, and what is still intended
 
-Tracked in #27: an empty facade for callers below the trust rung; the trust chain
-as the authorizer; the knock as the detector; the sidecar as the external
-verifier. Until then, treat every row in "What is true today" as the actual
-contract.
+Implemented:
+
+- **The empty facade** (#27): an unentitled caller sees no tools, no peers, no
+  lights; `initialize` still connects so a client is told there is nothing.
+- **The capability gate** (#27): tiers per method and per tool, filtered at both
+  `tools/list` and `tools/call`, with `unentitled_tool_call` filed on refusal.
+  A refusal is shaped as "method not found", not 401/403, so a probe learns
+  neither that the gate exists nor that the tool it guessed at does.
+- **Stdio by name** (#41): a configured target is launched on demand and
+  addressed as `adhd.stdio.<name>.call` (or `stdio:<name>` from a project
+  endpoint). A request that carries a command is a knock, refused and filed.
+  Teardown is by process group, so a wrapper's real server dies with it.
+
+Still intended:
+
+- **Host/Origin validation** (#29) — DNS rebinding still drives a loopback bind
+  from a browser, and the gate does not close it: a rebound request arrives with
+  no capability and therefore sees only the facade, but the attribution is still
+  `127.0.0.1`.
+- **The trust chain as authorizer** — the capability is a bearer secret, not a
+  negotiated isotope receipt. The shield proves possession; it does not prove
+  which implementation answered.
+- **The knock as the detector** with the sidecar as external verifier: the
+  knock phases are recorded but nothing verifies their order yet.
+
+The gate is opt-in because enabling it by default would lock out every current
+consumer at once (Zed's context server, lezz demo, a KB scope). The honest
+reading is: on a loopback bind with no gate, treat the surface as driveable.
 
 ## FAQ
 
-**Is it safe to expose adhd on the LAN?** No. There is no inbound auth. Bind
-loopback, or put an auth gateway in front — and remember loopback only removes
-the LAN, not the local-process and rebinding cases.
+**Is it safe to expose adhd on the LAN?** Not without the gate. With
+`mcp_server.gate.enabled` and a keyring, an unentitled LAN caller sees an empty
+facade and every real call files `unentitled_tool_call` — but Host/Origin
+validation is still missing (#29), and a bearer capability travels in cleartext
+over plain HTTP. Bind loopback, put an auth gateway in front, or keep the LAN
+exposure deliberate (`--force`) and gate it.
+
+**How do I give a caller a capability?** `adhd.yaml`:
+
+```yaml
+mcp_server:
+  enabled: true
+  gate:
+    enabled: true
+    key_file: ~/.config/adhd/gate.key   # created 0600 on first start
+```
+
+The keyring holds `read` (0), `write` (3) and `exec` (6) keys. A caller presents
+either `Authorization: Bearer <kid>.<secret>` or a signed `_shield` object in
+`params` (kid, ts, nonce, rung, epoch, sig), the same contract as kb's shield
+gate. Do not retry a rejected signed request with the same nonce: a successful
+verification spends it.
+
+**Why can a caller with an exec key use `adhd.proxy` with its own credential?**
+Because an exec capability is authorization to use this instance as a proxy hop.
+The exploit was that an *anonymous* caller could do it (#27); the remedy is the
+tier, not removing the proxy. If that is too much for a credential you issue,
+issue `write` or `read` instead.
+
+**Can `adhd.proxy` reach a stdio server?** Not by naming one. Stdio servers are
+configured as `stdio_targets` and addressed by name; a request carrying
+`stdio:…`, `command`, `cmd`, `args` or `argv` is refused and filed as
+`stdio_knock`. The transport exists (#41); the command lives in the operator's
+file, never in a request.
+
+**What does a stdio target inherit?** Nothing from adhd's environment unless it
+is named in `inherit_env`. A child that inherits `os.Environ()` inherits every
+API key adhd was opened with, so `PATH` and `HOME` are passed explicitly. No
+shell interprets `command`/`args`.
 
 **Why did adhd refuse to start after I added `smoke_alarm`?** The advertise guard
 refuses to register/advertise a non-loopback MCP bind (an unguarded endpoint is an

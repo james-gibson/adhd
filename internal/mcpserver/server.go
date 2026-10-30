@@ -23,11 +23,13 @@ import (
 
 	"github.com/james-gibson/adhd/internal/config"
 	"github.com/james-gibson/adhd/internal/demo"
+	"github.com/james-gibson/adhd/internal/entitle"
 	"github.com/james-gibson/adhd/internal/lights"
 	"github.com/james-gibson/adhd/internal/metricsapi"
 	"github.com/james-gibson/adhd/internal/mirror"
 	"github.com/james-gibson/adhd/internal/proxy"
 	"github.com/james-gibson/adhd/internal/smoketest"
+	"github.com/james-gibson/adhd/internal/stdio"
 	"github.com/james-gibson/adhd/internal/tearsheet"
 )
 
@@ -93,6 +95,10 @@ type dynamicTool struct {
 	fakeResult  interface{}
 	handler     func(ctx context.Context, params interface{}) (interface{}, *jsonrpcError)
 	cluster     string // owning cluster name if any
+	// tier is the capability rung this tool requires when the gate is on. Every
+	// constructor sets it explicitly; dynamicTier treats a zero value as
+	// capDanger so a future constructor that forgets cannot default to read.
+	tier int
 	// origin is what backs the tool: the project's mcp_url, the repo slug, or
 	// the decoy's description. It is how a repeat registration is told apart
 	// from a different thing claiming the same name.
@@ -180,7 +186,19 @@ type Server struct {
 	receiptComputer ReceiptComputer
 	receiptVerifier ReceiptVerifier
 
+	// securityAlertHandler receives fireSecurity events.
 	securityAlertHandler SecurityAlertHandler
+
+	// gate is the inbound entitlement gate (adhd#27). Nil means the surface is
+	// open, which is the behaviour every build before the gate had.
+	gate *entitle.Gate
+
+	// stdio is the MCP stdio transport (adhd#41). Nil when no stdio_targets are
+	// configured, which is also when no stdio tool exists to reach.
+	stdio *stdio.Manager
+	// stdioCollisions records names a child tool wanted but another tool already
+	// held. They are reported through adhd.stdio.list, never silently dropped.
+	stdioCollisions []string
 
 	// streamObserver receives the cost record of each closed edge stream
 	// (GET /mcp). Set via SetStreamObserver; see sse_edge.go.
@@ -417,11 +435,17 @@ func (s *Server) honeypotContact(decoy *dynamicTool, callerIP, via string, weigh
 
 // fireSecurity adds a red security light to the cluster and calls the handler.
 func (s *Server) fireSecurity(level, event string, details map[string]interface{}) {
-	// Surface as a red light so the local cluster/TUI shows it immediately.
+	// Surface as a red light so the local cluster/TUI shows it immediately. The
+	// source names what fired, so a gate refusal is not filed in the panel as a
+	// honeypot contact it never was.
+	source := "security"
+	if event == "honeypot_triggered" {
+		source = "honeypot"
+	}
 	s.cluster.Upsert(&lights.Light{
 		Name:    "security/" + event,
 		Type:    "security",
-		Source:  "honeypot",
+		Source:  source,
 		Status:  lights.StatusRed,
 		Details: fmt.Sprintf("%v", details),
 	})
@@ -474,12 +498,20 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown gracefully stops the server
+// Shutdown gracefully stops the server and every stdio session it owns. The
+// chatty part of a stdio target is the child process, so a shutdown that only
+// closed the listener would leave it running.
 func (s *Server) Shutdown(ctx context.Context) error {
-	if s.server == nil {
-		return nil
+	var firstErr error
+	if s.server != nil {
+		firstErr = s.server.Shutdown(ctx)
 	}
-	return s.server.Shutdown(ctx)
+	if manager := s.stdioManager(); manager != nil {
+		if err := manager.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // handleMCPRPC processes JSON-RPC requests
@@ -502,6 +534,16 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The gate decides whether this caller may see the real surface at all, and
+	// at which capability. A refusal is answered here and never dispatched; the
+	// event is filed inside authorize.
+	decision := s.authorize(r, req.Method, req.Params)
+	if decision.refused {
+		s.writeResponse(w, req.ID, decision.result, decision.err)
+		return
+	}
+	params := decision.params
+
 	var result interface{}
 	var respErr *jsonrpcError
 
@@ -510,13 +552,13 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 		result = s.handleInitialize()
 
 	case "adhd.status":
-		result = s.handleStatus()
+		result = s.handleStatus(decision.rung)
 
 	case "adhd.lights.list":
 		result = s.handleLightsList()
 
 	case "adhd.lights.get":
-		result, respErr = s.handleLightsGet(req.Params)
+		result, respErr = s.handleLightsGet(params)
 
 	case "adhd.isotope.status":
 		result = s.handleIsotopeStatus()
@@ -525,61 +567,66 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 		result = s.handleIsotopePeers()
 
 	case "tools/list":
-		result = s.handleToolsList()
+		result = s.handleToolsList(decision.rung)
 
 	case "tools/call":
-		result, respErr = s.handleToolsCall(r.Context(), req.Params)
+		result, respErr = s.handleToolsCall(r.Context(), params, decision.rung)
 
 	case "ping":
 		result = map[string]interface{}{"pong": true}
 
+	case "notifications/initialized":
+		// MCP's notification carries no id and expects no result body. Answering
+		// an empty object keeps a lenient client happy without inventing state.
+		result = map[string]interface{}{}
+
 	case "smoke-alarm.isotope.push-logs":
-		result, respErr = s.handlePushLogs(req.Params) //nolint:govet
+		result, respErr = s.handlePushLogs(params) //nolint:govet
 
 	case "adhd.isotope.instance":
 		result = s.handleIsotopeInstance()
 
 	case "adhd.rung.respond":
-		result, respErr = s.handleRungRespond(req.Params)
+		result, respErr = s.handleRungRespond(params)
 
 	case "adhd.rung.verify":
-		result, respErr = s.handleRungVerify(req.Params)
+		result, respErr = s.handleRungVerify(params)
 
 	case "adhd.rung.challenge":
-		result, respErr = s.handleRungChallenge(r.Context(), req.Params)
+		result, respErr = s.handleRungChallenge(r.Context(), params)
 
 	case "adhd.cluster.join":
-		result, respErr = s.handleClusterJoin(req.Params)
+		result, respErr = s.handleClusterJoin(params)
 
 	case "adhd.cluster.leave":
-		result, respErr = s.handleClusterLeave(req.Params)
+		result, respErr = s.handleClusterLeave(params)
 
 	case "adhd.hurl.run":
-		result, respErr = s.handleHurlRun(r.Context(), req.Params)
+		result, respErr = s.handleHurlRun(r.Context(), params)
 
 	case "adhd.gh.run":
-		result, respErr = s.handleGHRun(r.Context(), req.Params)
+		result, respErr = s.handleGHRun(r.Context(), params)
 
 	case "adhd.pr":
-		result, respErr = s.handlePRCache(r.Context(), req.Params)
+		result, respErr = s.handlePRCache(r.Context(), params)
 
 	case "adhd.dependabot.alerts":
-		result, respErr = s.handleDependabotAlerts(r.Context(), req.Params)
+		result, respErr = s.handleDependabotAlerts(r.Context(), params)
 
 	case "adhd.path.negotiate":
-		result, respErr = s.handlePathNegotiate(r.Context(), req.Params)
+		result, respErr = s.handlePathNegotiate(r.Context(), params)
 
 	case "adhd.path.verify":
-		result, respErr = s.handlePathVerify(r.Context(), req.Params)
+		result, respErr = s.handlePathVerify(r.Context(), params)
 
 	case "adhd.path.list":
-		result, respErr = s.handlePathList(req.Params)
+		result, respErr = s.handlePathList(params)
 
 	case "adhd.path.call":
-		result, respErr = s.handlePathCall(r.Context(), req.Params)
+		result, respErr = s.handlePathCall(r.Context(), params)
 
 	case "adhd.proxy":
-		result, respErr = s.handleProxyCall(r.Context(), req.Params)
+		result, respErr = s.handleProxyCall(r.Context(), params)
 
 	default:
 		// Check runtime-registered per-repo and per-project tools.
@@ -603,7 +650,7 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 					"distance_42i", distance,
 					"threshold_42i", threshold,
 					"fired", fired,
-					"params", req.Params,
+					"params", params,
 				)
 				if fired {
 					s.fireSecurity("warn", "honeypot_triggered", map[string]interface{}{
@@ -616,7 +663,7 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 				}
 				result = dynTool.fakeResult
 			} else {
-				result, respErr = dynTool.handler(r.Context(), req.Params)
+				result, respErr = dynTool.handler(r.Context(), params)
 			}
 		} else {
 			respErr = &jsonrpcError{
@@ -626,18 +673,21 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	resp := jsonrpcResponse{
-		JSONRPC: "2.0",
-		ID:      req.ID,
-	}
+	s.writeResponse(w, req.ID, result, respErr)
+}
 
+// writeResponse writes one JSON-RPC response. It is shared by the normal
+// dispatch path and the gate's refusal path so a refusal cannot accidentally
+// use a different envelope from a real answer — that difference would be the
+// tell the facade exists.
+func (s *Server) writeResponse(w http.ResponseWriter, id interface{}, result interface{}, respErr *jsonrpcError) {
+	w.Header().Set("Content-Type", "application/json")
+	resp := jsonrpcResponse{JSONRPC: "2.0", ID: id}
 	if respErr != nil {
 		resp.Error = respErr
 	} else {
 		resp.Result = result
 	}
-
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		slog.Warn("encode response", "error", err)
 	}
@@ -726,8 +776,13 @@ const Motd = "Don't Panic. 42 is a coordinate, not a credential; trust is what y
 	"This greeting is a signed test vector (isotope/testdata/burned, key: zaphod-beeblebrox), " +
 	"so anyone can check it and nobody has to trust it. Verify it; don't believe it."
 
-// handleToolsList returns available tools (static + runtime-registered per-repo tools)
-func (s *Server) handleToolsList() interface{} {
+// handleToolsList returns available tools (static + runtime-registered tools).
+//
+// capRung is the caller's effective capability when the gate is on; a tool above
+// it is not listed, because the facade's job is to withhold the map as well as
+// the action. When the gate is off every caller arrives at capDanger and sees
+// the whole surface, which is the pre-gate behaviour.
+func (s *Server) handleToolsList(capRung int) interface{} {
 	static := []map[string]interface{}{
 		{
 			"name":        "adhd.status",
@@ -1128,10 +1183,19 @@ func (s *Server) handleToolsList() interface{} {
 		},
 	}
 
+	visible := make([]map[string]interface{}, 0, len(static)+len(s.dynamicTools))
+	for _, tool := range static {
+		if name, _ := tool["name"].(string); toolTier(name) <= capRung {
+			visible = append(visible, tool)
+		}
+	}
+
 	s.mu.RLock()
-	dynTools := make([]map[string]interface{}, 0, len(s.dynamicTools))
 	for _, t := range s.dynamicTools {
-		dynTools = append(dynTools, map[string]interface{}{
+		if t.tier > capRung {
+			continue
+		}
+		visible = append(visible, map[string]interface{}{
 			"name":        t.name,
 			"description": t.description,
 			"inputSchema": t.inputSchema,
@@ -1139,13 +1203,11 @@ func (s *Server) handleToolsList() interface{} {
 	}
 	s.mu.RUnlock()
 
-	return map[string]interface{}{
-		"tools": append(static, dynTools...),
-	}
+	return map[string]interface{}{"tools": visible}
 }
 
 // handleToolsCall invokes a tool by name and returns the result
-func (s *Server) handleToolsCall(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
+func (s *Server) handleToolsCall(ctx context.Context, params interface{}, capRung int) (interface{}, *jsonrpcError) {
 	paramsMap, ok := params.(map[string]interface{})
 	if !ok {
 		return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
@@ -1171,7 +1233,7 @@ func (s *Server) handleToolsCall(ctx context.Context, params interface{}) (inter
 
 	switch toolName {
 	case "adhd.status":
-		result = s.handleStatus()
+		result = s.handleStatus(capRung)
 	case "adhd.lights.list":
 		result = s.handleLightsList()
 	case "adhd.lights.get":
@@ -1280,7 +1342,7 @@ func (s *Server) handleToolsCall(ctx context.Context, params interface{}) (inter
 }
 
 // handleStatus returns dashboard summary
-func (s *Server) handleStatus() interface{} {
+func (s *Server) handleStatus(capRung int) interface{} {
 	lightSummary := map[string]int{
 		"total":  s.cluster.Count(),
 		"green":  s.cluster.CountByStatus(lights.StatusGreen),
@@ -1290,7 +1352,15 @@ func (s *Server) handleStatus() interface{} {
 	}
 
 	s.mu.RLock()
-	dynamicCount := len(s.dynamicTools)
+	// Count only the tools this caller may see. A count that includes tools
+	// absent from tools/list tells the caller they exist, which is the map the
+	// facade withholds.
+	dynamicCount := 0
+	for _, tool := range s.dynamicTools {
+		if tool.tier <= capRung {
+			dynamicCount++
+		}
+	}
 	peerNames := make([]string, 0, len(s.clusterPeers))
 	for name := range s.clusterPeers {
 		peerNames = append(peerNames, name)
@@ -1963,6 +2033,7 @@ func (s *Server) registerRepoTool(clusterName, slug string) registrationOutcome 
 			}
 			return s.fetchDependabotAlerts(ctx, capturedSlug, state)
 		},
+		tier:    capExec,
 		cluster: clusterName,
 	})
 	slog.Info("registered per-repo tool", "tool", toolName, "cluster", clusterName)
@@ -2030,6 +2101,9 @@ func (s *Server) registerDecoy(clusterName, name, description string, fakeResult
 		honeypot:    true,
 		sensitivity: sensitivity,
 		fakeResult:  fakeResult,
+		// A decoy is a knock surface, not a capability: it stays visible and
+		// contactable at read tier so the trap keeps working under the gate.
+		tier: capRead,
 		inputSchema: map[string]interface{}{
 			"type":       "object",
 			"properties": map[string]interface{}{},
@@ -2831,9 +2905,13 @@ func (s *Server) registerProjectToolID(clusterName, route, projectName, repo, mc
 func (s *Server) newProjectTool(toolName, clusterName, projectName, repo, mcpURL string) *dynamicTool {
 	capturedURL := mcpURL
 	capturedProject := projectName
+	stdioTarget, isStdio := stdioTargetFromEndpoint(mcpURL)
 	desc := fmt.Sprintf("Proxy JSON-RPC call to the %s MCP server (cluster: %s)", projectName, clusterName)
 	if repo != "" {
 		desc = fmt.Sprintf("Proxy JSON-RPC call to the %s MCP server — %s (cluster: %s)", projectName, repo, clusterName)
+	}
+	if isStdio {
+		desc = fmt.Sprintf("Proxy JSON-RPC call to the %s MCP server over stdio (target: %s, cluster: %s)", projectName, stdioTarget, clusterName)
 	}
 	return &dynamicTool{
 		name:        toolName,
@@ -2853,6 +2931,7 @@ func (s *Server) newProjectTool(toolName, clusterName, projectName, repo, mcpURL
 			},
 			"required": []string{"method"},
 		},
+		tier: capExec,
 		handler: func(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
 			m, ok := params.(map[string]interface{})
 			if !ok {
@@ -2865,6 +2944,12 @@ func (s *Server) newProjectTool(toolName, clusterName, projectName, repo, mcpURL
 			var callParams interface{}
 			if p, ok := m["params"]; ok {
 				callParams = p
+			}
+			// A project published as `stdio:<name>` resolves through the stdio
+			// transport, so mcp-lab's Qdrant case works without changing its
+			// call shape (adhd#41).
+			if isStdio {
+				return s.callStdio(ctx, stdioTarget, method, callParams)
 			}
 			result, err := s.callPeerMCP(ctx, capturedURL, method, callParams)
 			if err != nil {
@@ -3044,6 +3129,20 @@ func (s *Server) handleProxyCall(ctx context.Context, params interface{}) (inter
 	paramsMap, ok := params.(map[string]interface{})
 	if !ok {
 		return nil, &jsonrpcError{Code: -32602, Message: "params must be an object"}
+	}
+
+	// A request that names a command is a knock, not a proxy target. adhd.proxy
+	// is URL-only by construction: a caller-supplied command would make an
+	// unauthenticated surface into arbitrary command execution, a strict
+	// worsening of the SSRF it already is (adhd#41). Refuse and file; a knock
+	// never admits.
+	if stdioKnock(paramsMap) {
+		caller, _ := ctx.Value(callerIPKey{}).(string)
+		s.refuseStdioTarget(caller, paramsMap)
+		return nil, &jsonrpcError{
+			Code:    -32602,
+			Message: "target_endpoint must be an HTTP(S) URL; stdio servers are addressed by configured name",
+		}
 	}
 
 	// Normalize a string-encoded nested "call" object back into a map so both
