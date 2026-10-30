@@ -3,6 +3,8 @@ package headless
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -291,25 +293,64 @@ func (s *Server) registrationRole() IsotopeRole {
 	return s.role
 }
 
-// Environment lezz uses to hand a cluster its launch secret. lezz mints one per
-// cluster and sets both variables on every process it spawns, so this instance
-// can prove which cluster it belongs to without the secret ever crossing the
-// wire (isotope#23).
+// Environment lezz uses to hand a cluster its evidence. lezz sets these on
+// every process it spawns, so this instance can prove which cluster it belongs
+// to without the material itself ever crossing the wire.
+//
+// There are two shapes, and they are handed over in separate variables because
+// they are different things (isotope#25, isotope#26):
+//
+//   - LEZZ_CLUSTER_ID + LEZZ_CLUSTER_SECRET: the cluster's launch secret, which
+//     this instance proves by HMAC. Verification implies minting, so only the
+//     cluster and its alarm can check it (isotope#23).
+//   - LEZZ_CLUSTER_CERT + LEZZ_CLUSTER_KEY: the certificate a root issued for
+//     the cluster, and the private key it signs with. The receipt is ed25519 and
+//     any verifier that pins the root can check it without holding the key.
+//
+// The certificate is public and the key is not, so an operator hands each one
+// from its own store; one variable carrying both would make every log line that
+// prints the environment a key leak.
 const (
 	EnvClusterID     = "LEZZ_CLUSTER_ID"
 	EnvClusterSecret = "LEZZ_CLUSTER_SECRET"
+	EnvClusterCert   = "LEZZ_CLUSTER_CERT"
+	EnvClusterKey    = "LEZZ_CLUSTER_KEY"
 )
 
-// clusterAttestation is the receipt this instance presents on registration: an
-// HMAC over the cluster identity and its own endpoint, signed with the secret
-// lezz handed it.
+// clusterAttestation is the receipt this instance presents on registration:
+// either an ed25519 receipt carrying the cluster's certificate, or an HMAC over
+// the cluster identity and its own endpoint.
 //
-// Nil when either variable is unset, which is the honest answer for an instance
-// nobody launched as part of a cluster: the registration then stays at the
-// floor, because a self-declared endpoint is not evidence (isotope#23). The
+// The certificate wins when both shapes are configured: it is the stronger
+// evidence, because a third party can verify it without being able to mint as
+// the cluster. The HMAC path is untouched for every cluster that has not adopted
+// certificates.
+//
+// Nil when nothing usable is configured, which is the honest answer for an
+// instance nobody launched as part of a cluster: the registration then stays at
+// the floor, because a self-declared endpoint is not evidence (isotope#23). A
+// certificate that is configured but unusable also yields nil: registering
+// unattested is visible in the rung's evidence, whereas falling back to a secret
+// nobody pinned would look like a cluster that quietly lost its rung. The
 // receipt is rebuilt on every registration, including each heartbeat, because it
 // is timestamped and only valid inside the verifier's skew window.
 func clusterAttestation(endpoint string) *isotope.Attestation {
+	certRaw := strings.TrimSpace(os.Getenv(EnvClusterCert))
+	keyRaw := strings.TrimSpace(os.Getenv(EnvClusterKey))
+	if certRaw != "" || keyRaw != "" {
+		if certRaw == "" || keyRaw == "" {
+			slog.Error("cluster certificate needs both " + EnvClusterCert + " and " + EnvClusterKey +
+				"; registering unattested")
+			return nil
+		}
+		att, err := certificateAttestation(certRaw, keyRaw, endpoint)
+		if err != nil {
+			slog.Error("cluster certificate is unusable; registering unattested", "error", err)
+			return nil
+		}
+		return att
+	}
+
 	cluster := strings.TrimSpace(os.Getenv(EnvClusterID))
 	secret := os.Getenv(EnvClusterSecret)
 	if cluster == "" || secret == "" {
@@ -317,6 +358,68 @@ func clusterAttestation(endpoint string) *isotope.Attestation {
 	}
 	att := isotope.SignAttestation(secret, cluster, endpoint, time.Now())
 	return &att
+}
+
+// certificateAttestation reads the two halves lezz hands over and signs an
+// ed25519 receipt for endpoint.
+func certificateAttestation(certRaw, keyRaw, endpoint string) (*isotope.Attestation, error) {
+	cert, err := decodeClusterCertificate(certRaw)
+	if err != nil {
+		return nil, err
+	}
+	key, err := decodeClusterKey(keyRaw)
+	if err != nil {
+		return nil, err
+	}
+	if cert.Cluster == "" {
+		return nil, errors.New("certificate names no cluster")
+	}
+	// A key that is not the certificate's pair would produce receipts the
+	// verifier rejects one round trip later. Refuse it here, where the operator
+	// can see which variable is wrong.
+	pub, err := base64.StdEncoding.DecodeString(strings.TrimSpace(cert.PublicKey))
+	if err != nil {
+		return nil, fmt.Errorf("certificate public_key is not base64: %w", err)
+	}
+	if !ed25519.PublicKey(pub).Equal(key.Public()) {
+		return nil, errors.New(EnvClusterKey + " does not match the certificate's public_key")
+	}
+	att := isotope.SignReceiptEd25519(key, cert, endpoint, time.Now())
+	return &att, nil
+}
+
+// decodeClusterCertificate accepts the certificate the way seed42 prints it (the
+// base64 blob) or as its JSON, so an operator can paste either without a
+// conversion step.
+func decodeClusterCertificate(raw string) (isotope.Certificate, error) {
+	body := []byte(raw)
+	if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil {
+		body = decoded
+	}
+	var cert isotope.Certificate
+	if err := json.Unmarshal(body, &cert); err != nil {
+		return isotope.Certificate{}, fmt.Errorf("certificate is neither base64 JSON nor JSON: %w", err)
+	}
+	return cert, nil
+}
+
+// decodeClusterKey reads an ed25519 private key as base64, accepting either the
+// 64-byte private key or its 32-byte seed — the two shapes an operator's key
+// store and `seed42 init` respectively produce.
+func decodeClusterKey(raw string) (ed25519.PrivateKey, error) {
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s is not base64: %w", EnvClusterKey, err)
+	}
+	switch len(decoded) {
+	case ed25519.PrivateKeySize:
+		return ed25519.PrivateKey(decoded), nil
+	case ed25519.SeedSize:
+		return ed25519.NewKeyFromSeed(decoded), nil
+	default:
+		return nil, fmt.Errorf("%s is %d bytes, want %d (private key) or %d (seed)",
+			EnvClusterKey, len(decoded), ed25519.PrivateKeySize, ed25519.SeedSize)
+	}
 }
 
 // registerWithIdentity registers this instance with its project route and the

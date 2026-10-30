@@ -1,8 +1,14 @@
 package headless
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/james-gibson/isotope"
 )
 
 // TestClusterAttestationNeedsBothVariables: half a cluster identity is no
@@ -71,5 +77,148 @@ func TestClusterAttestationIsOnTheWire(t *testing.T) {
 	// ":9090" must be the one a registry entry of 127.0.0.1:9090 is judged with.
 	if err := att.Verify("launch-secret", ":9090", time.Now(), 0); err != nil {
 		t.Fatalf("wildcard-endpoint receipt does not verify: %v", err)
+	}
+}
+
+// certificateFixture mints a root and the certificate it issues for `cluster`,
+// returning the two environment values lezz would hand this instance.
+func certificateFixture(t *testing.T, cluster string) (certEnv, keyEnv string, rootPub ed25519.PublicKey) {
+	t.Helper()
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate root: %v", err)
+	}
+	clusterPub, clusterPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate cluster key: %v", err)
+	}
+	cert, err := isotope.SignCertificate(isotope.Certificate{
+		Cluster:   cluster,
+		PublicKey: base64.StdEncoding.EncodeToString(clusterPub),
+		Issuer:    isotope.PublicSeedCluster,
+		Scope:     []string{isotope.ScopeAttest},
+	}, rootPriv)
+	if err != nil {
+		t.Fatalf("sign certificate: %v", err)
+	}
+	body, err := json.Marshal(cert)
+	if err != nil {
+		t.Fatalf("marshal certificate: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(body),
+		base64.StdEncoding.EncodeToString(clusterPriv),
+		rootPub
+}
+
+// TestClusterAttestationFromACertificate is the certificate handover: lezz sets
+// a certificate and the key it was issued for, and the receipt this instance
+// signs is checked by a verifier that holds only the root.
+func TestClusterAttestationFromACertificate(t *testing.T) {
+	certEnv, keyEnv, rootPub := certificateFixture(t, "demo-1234")
+	t.Setenv(EnvClusterCert, certEnv)
+	t.Setenv(EnvClusterKey, keyEnv)
+
+	att := clusterAttestation("127.0.0.1:9090")
+	if att == nil {
+		t.Fatal("no attestation from a certificate and key")
+	}
+	if att.EffectiveScheme() != isotope.SchemeEd25519 {
+		t.Fatalf("scheme = %q, want %q", att.EffectiveScheme(), isotope.SchemeEd25519)
+	}
+	if att.Cert == nil || att.Cert.Cluster != "demo-1234" {
+		t.Fatalf("receipt carries the wrong certificate: %+v", att.Cert)
+	}
+	keyring := isotope.Keyring{Roots: map[string]ed25519.PublicKey{isotope.PublicSeedCluster: rootPub}}
+	if err := att.VerifyWith(keyring, "127.0.0.1:9090", time.Now(), 0); err != nil {
+		t.Fatalf("certificate receipt does not verify against the pinned root: %v", err)
+	}
+	// The endpoint is bound into the signature, as it is for the HMAC shape.
+	if err := att.VerifyWith(keyring, "127.0.0.1:9091", time.Now(), 0); err == nil {
+		t.Fatal("receipt verified for a different endpoint")
+	}
+}
+
+// TestClusterAttestationPrefersTheCertificate: a cluster that has adopted
+// certificates keeps its evidence even if a launch secret is also in the
+// environment, because the certificate is the shape a third party can check.
+func TestClusterAttestationPrefersTheCertificate(t *testing.T) {
+	certEnv, keyEnv, _ := certificateFixture(t, "demo-1234")
+	t.Setenv(EnvClusterCert, certEnv)
+	t.Setenv(EnvClusterKey, keyEnv)
+	t.Setenv(EnvClusterID, "demo-1234")
+	t.Setenv(EnvClusterSecret, "launch-secret")
+
+	att := clusterAttestation("127.0.0.1:9090")
+	if att == nil {
+		t.Fatal("no attestation")
+	}
+	if att.EffectiveScheme() != isotope.SchemeEd25519 {
+		t.Fatalf("scheme = %q, want the certificate shape to win", att.EffectiveScheme())
+	}
+}
+
+// TestClusterAttestationFailsClosedOnABrokenCertificate: a certificate that is
+// configured but unusable must not silently fall back to a secret. An unattested
+// registration is visible in the rung's evidence; a quiet downgrade to an HMAC
+// nobody pinned looks like a working cluster that lost its rung.
+func TestClusterAttestationFailsClosedOnABrokenCertificate(t *testing.T) {
+	t.Run("certificate without key", func(t *testing.T) {
+		certEnv, _, _ := certificateFixture(t, "demo-1234")
+		t.Setenv(EnvClusterCert, certEnv)
+		t.Setenv(EnvClusterKey, "")
+		t.Setenv(EnvClusterID, "demo-1234")
+		t.Setenv(EnvClusterSecret, "launch-secret")
+		if att := clusterAttestation("127.0.0.1:9090"); att != nil {
+			t.Fatalf("attestation = %+v, want nil (no key to sign with)", att)
+		}
+	})
+
+	t.Run("key without certificate", func(t *testing.T) {
+		_, keyEnv, _ := certificateFixture(t, "demo-1234")
+		t.Setenv(EnvClusterCert, "")
+		t.Setenv(EnvClusterKey, keyEnv)
+		t.Setenv(EnvClusterID, "demo-1234")
+		t.Setenv(EnvClusterSecret, "launch-secret")
+		if att := clusterAttestation("127.0.0.1:9090"); att != nil {
+			t.Fatalf("attestation = %+v, want nil (no certificate to present)", att)
+		}
+	})
+
+	t.Run("key is not the certificate's pair", func(t *testing.T) {
+		certEnv, _, _ := certificateFixture(t, "demo-1234")
+		_, otherKey, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("generate key: %v", err)
+		}
+		t.Setenv(EnvClusterCert, certEnv)
+		t.Setenv(EnvClusterKey, base64.StdEncoding.EncodeToString(otherKey))
+		if att := clusterAttestation("127.0.0.1:9090"); att != nil {
+			t.Fatalf("attestation = %+v, want nil (the key does not match the certificate)", att)
+		}
+	})
+
+	t.Run("certificate is not JSON", func(t *testing.T) {
+		t.Setenv(EnvClusterCert, base64.StdEncoding.EncodeToString([]byte("not a certificate")))
+		t.Setenv(EnvClusterKey, base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize)))
+		if att := clusterAttestation("127.0.0.1:9090"); att != nil {
+			t.Fatalf("attestation = %+v, want nil", att)
+		}
+	})
+}
+
+// TestClusterAttestationAcceptsRawCertificateJSON lets an operator paste the
+// certificate a tool printed instead of its base64 wrapper.
+func TestClusterAttestationAcceptsRawCertificateJSON(t *testing.T) {
+	certEnv, keyEnv, _ := certificateFixture(t, "demo-1234")
+	decoded, err := base64.StdEncoding.DecodeString(certEnv)
+	if err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	t.Setenv(EnvClusterCert, string(decoded))
+	t.Setenv(EnvClusterKey, keyEnv)
+
+	att := clusterAttestation("127.0.0.1:9090")
+	if att == nil || att.EffectiveScheme() != isotope.SchemeEd25519 {
+		t.Fatalf("raw JSON certificate was not accepted: %+v", att)
 	}
 }
