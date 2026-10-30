@@ -204,6 +204,12 @@ func (s *Server) Start(logPath string) error {
 		// clusters' adhd.project.<route>.call proxy tools.
 		s.mcpServer.RegisterDiscoveredClusters(s.cfg.DiscoveredClusters)
 
+		// Attach the optional surfaces from config: the inbound entitlement gate
+		// (adhd#27) and the stdio MCP transport (adhd#41).
+		if err := mcpserver.Attach(s.mcpServer, s.cfg); err != nil {
+			return err
+		}
+
 		// Provide topology information to MCP server
 		s.mcpServer.SetTopologyProvider(s.GetTopologyInfo)
 		s.mcpServer.SetSpecFidelityProvider(s.GetSpecFidelity)

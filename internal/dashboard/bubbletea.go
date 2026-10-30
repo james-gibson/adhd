@@ -204,7 +204,14 @@ func NewBubbleTeaDashboard(cfg *config.Config) *BubbleTeaDashboard {
 		// Clusters discovered by --demo carry their projects here; without this
 		// the proxy tools exist only when a cluster pushes adhd.cluster.join.
 		mcpServer.RegisterDiscoveredClusters(cfg.DiscoveredClusters)
-		slog.Info("MCP server configured", "addr", cfg.MCPServer.Addr)
+		if err := mcpserver.Attach(mcpServer, cfg); err != nil {
+			// Fail closed: a surface whose gate cannot load must not be served
+			// open. The MCP endpoint is simply not started.
+			slog.Error("refusing to serve MCP: failed to attach surfaces", "error", err)
+			mcpServer = nil
+		} else {
+			slog.Info("MCP server configured", "addr", cfg.MCPServer.Addr)
+		}
 	}
 
 	// Create watcher for statically-configured smoke-alarm endpoints.

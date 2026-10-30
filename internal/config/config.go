@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,13 +13,16 @@ import (
 
 // Config represents the complete ADHD configuration
 type Config struct {
-	MCPServer         MCPServerConfig       `yaml:"mcp_server"`
-	Health            HealthConfig          `yaml:"health"`
-	Project           ProjectConfig         `yaml:"project"`
-	SmokeAlarm        []SmokeAlarmEndpoint  `yaml:"smoke_alarm"`
-	MCPTargets        []MCPTarget           `yaml:"mcp_targets"`
-	Features          FeaturesConfig        `yaml:"features"`
+	MCPServer          MCPServerConfig      `yaml:"mcp_server"`
+	Health             HealthConfig         `yaml:"health"`
+	Project            ProjectConfig        `yaml:"project"`
+	SmokeAlarm         []SmokeAlarmEndpoint `yaml:"smoke_alarm"`
+	MCPTargets         []MCPTarget          `yaml:"mcp_targets"`
+	Features           FeaturesConfig       `yaml:"features"`
 	CertifiedEndpoints []CertifiedEndpoint  `yaml:"certified_endpoints"`
+	// StdioTargets are locally configured stdio MCP servers. They are launched
+	// by adhd on demand and addressed by name; no request can add one.
+	StdioTargets []StdioTarget `yaml:"stdio_targets,omitempty"`
 	// DiscoveredClusters carries the MCP-side context of lezz demo clusters
 	// found by `adhd --demo`: their adhd_mcp endpoints and projects. Their alarm
 	// endpoints are expanded into SmokeAlarm, which is the shape the watcher
@@ -52,9 +56,53 @@ type HealthConfig struct {
 
 // MCPServerConfig configures ADHD's hosted MCP server
 type MCPServerConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Addr    string `yaml:"addr"`    // e.g., ":9090"
-	SSEAddr string `yaml:"sse_addr"` // e.g., ":9091" for SSE (optional)
+	Enabled bool       `yaml:"enabled"`
+	Addr    string     `yaml:"addr"`     // e.g., ":9090"
+	SSEAddr string     `yaml:"sse_addr"` // e.g., ":9091" for SSE (optional)
+	Gate    GateConfig `yaml:"gate,omitempty"`
+}
+
+// GateConfig is the inbound entitlement gate (adhd#27).
+//
+// With the gate on, a caller that does not present a capability sees the empty
+// facade — no tools, no peers, no lights — and a call to a real tool files
+// `unentitled_tool_call` instead of executing. The capability is a bearer
+// secret over a keyring file whose keys each carry a maximum rung:
+//
+//	R/C -> 0     W -> 3     E -> 4     X -> 6
+//
+// That is kb's shield-gate contract (kb/scripts/cluster/shield_gate.py), so one
+// client can address adhd and a KB scope the same way. A key file is
+// `{"keys":[{"id":"read","key":"…","rung":0}, …]}`; a missing file is created
+// 0600 on first start, because a gate with no keyring admits nobody and that
+// looks exactly like an outage.
+type GateConfig struct {
+	Enabled bool          `yaml:"enabled"`
+	KeyFile string        `yaml:"key_file,omitempty"`
+	Period  time.Duration `yaml:"period,omitempty"` // tumble epoch; default 30s
+}
+
+// StdioTarget is a named, locally configured MCP server launched over stdio
+// (adhd#41).
+//
+// A stdio server is a process, so it is never addressable from a request: the
+// caller names a target from this list and adhd launches it. Letting
+// `adhd.proxy` take a `stdio:` command would turn an unauthenticated surface
+// into arbitrary command execution, so no request field may carry a command.
+//
+// Env is explicit and the parent environment is not inherited. Name a variable
+// in InheritEnv to pass it through (PATH and HOME are the common ones); nothing
+// is inherited implicitly, because a child that receives os.Environ() also
+// receives every API key adhd was opened with.
+type StdioTarget struct {
+	Name         string            `yaml:"name"`
+	Command      string            `yaml:"command"`
+	Args         []string          `yaml:"args,omitempty"`
+	Env          map[string]string `yaml:"env,omitempty"`
+	InheritEnv   []string          `yaml:"inherit_env,omitempty"`
+	Cwd          string            `yaml:"cwd,omitempty"`
+	AllowedTools []string          `yaml:"allowed_tools,omitempty"` // empty = every tool the server publishes
+	Timeout      time.Duration     `yaml:"timeout,omitempty"`
 }
 
 // ProjectConfig is this project's registry identity. Route is the lezz
@@ -85,16 +133,16 @@ type SmokeAlarmEndpoint struct {
 // MCPTarget represents a direct MCP probe target
 type MCPTarget struct {
 	Name     string        `yaml:"name"`
-	Endpoint string        `yaml:"endpoint"`  // "http://host:port/mcp" or "stdio:command"
-	Tools    []string      `yaml:"tools"`     // specific tools to monitor (empty = all)
+	Endpoint string        `yaml:"endpoint"` // "http://host:port/mcp" or "stdio:command"
+	Tools    []string      `yaml:"tools"`    // specific tools to monitor (empty = all)
 	Interval time.Duration `yaml:"interval"`
 	Timeout  time.Duration `yaml:"timeout"`
 }
 
 // FeaturesConfig configures feature discovery
 type FeaturesConfig struct {
-	SearchPaths []string  `yaml:"search_paths"`
-	Binaries    []Binary  `yaml:"binaries"`
+	SearchPaths []string `yaml:"search_paths"`
+	Binaries    []Binary `yaml:"binaries"`
 }
 
 // Binary represents a software binary that provides features.
@@ -105,12 +153,12 @@ type FeaturesConfig struct {
 // publishes itself by name can be watched without the harness injecting its
 // address (adhd#62). See EndpointName.
 type Binary struct {
-	Name          string        `yaml:"name"`
-	Endpoint      string        `yaml:"endpoint"`  // URL, or a registry name (see EndpointName)
-	Features      []Feature     `yaml:"features"`
-	GherkinFiles  []string      `yaml:"gherkin_files"`  // .feature files this binary satisfies
-	Interval      time.Duration `yaml:"interval"`
-	Timeout       time.Duration `yaml:"timeout"`
+	Name         string        `yaml:"name"`
+	Endpoint     string        `yaml:"endpoint"` // URL, or a registry name (see EndpointName)
+	Features     []Feature     `yaml:"features"`
+	GherkinFiles []string      `yaml:"gherkin_files"` // .feature files this binary satisfies
+	Interval     time.Duration `yaml:"interval"`
+	Timeout      time.Duration `yaml:"timeout"`
 }
 
 // endpointName matches a bare registry name: one token, no scheme, no port, no
@@ -135,20 +183,20 @@ func (b Binary) EndpointName() (string, bool) {
 
 // Feature represents a feature provided by a binary
 type Feature struct {
-	Name         string `yaml:"name"`
-	GherkinFile  string `yaml:"gherkin_file"`   // path to .feature file
+	Name           string `yaml:"name"`
+	GherkinFile    string `yaml:"gherkin_file"`    // path to .feature file
 	GherkinFeature string `yaml:"gherkin_feature"` // feature name in Gherkin
 }
 
 // CertifiedEndpoint represents an MCP endpoint that has been certified
 // and is monitored by the smoke test scheduler
 type CertifiedEndpoint struct {
-	ID       string        `yaml:"id"`        // unique identifier (e.g., "stripe-api")
-	URL      string        `yaml:"url"`       // MCP endpoint URL (e.g., "https://api.stripe.com/mcp")
-	AuthType string        `yaml:"auth_type"` // "bearer", "api-key", "oauth2", or "none"
-	TokenEnv string        `yaml:"token_env"` // environment variable name for token (e.g., "STRIPE_API_KEY")
+	ID       string        `yaml:"id"`               // unique identifier (e.g., "stripe-api")
+	URL      string        `yaml:"url"`              // MCP endpoint URL (e.g., "https://api.stripe.com/mcp")
+	AuthType string        `yaml:"auth_type"`        // "bearer", "api-key", "oauth2", or "none"
+	TokenEnv string        `yaml:"token_env"`        // environment variable name for token (e.g., "STRIPE_API_KEY")
 	Header   string        `yaml:"header,omitempty"` // custom header name for api-key type
-	TestFreq time.Duration `yaml:"test_freq"` // how often to test (default 5 minutes)
+	TestFreq time.Duration `yaml:"test_freq"`        // how often to test (default 5 minutes)
 }
 
 // Load reads and parses a YAML config file
@@ -175,6 +223,10 @@ func Load(path string) (*Config, error) {
 	// Resolve relative paths relative to config file directory
 	configDir := filepath.Dir(path)
 	cfg.resolveRelativePaths(configDir)
+
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
 
 	return cfg, nil
 }
@@ -222,6 +274,18 @@ func (c *Config) resolveRelativePaths(configDir string) {
 		}
 	}
 
+	// The gate keyring and a target's working directory are filesystem
+	// locations named in this file, so a relative path means "next to the
+	// config" and not "wherever adhd was started from".
+	if c.MCPServer.Gate.KeyFile != "" && !filepath.IsAbs(c.MCPServer.Gate.KeyFile) {
+		c.MCPServer.Gate.KeyFile = filepath.Join(configDir, c.MCPServer.Gate.KeyFile)
+	}
+	for i := range c.StdioTargets {
+		if cwd := c.StdioTargets[i].Cwd; cwd != "" && !filepath.IsAbs(cwd) {
+			c.StdioTargets[i].Cwd = filepath.Join(configDir, cwd)
+		}
+	}
+
 	// Resolve gherkin file paths in binaries
 	for i := range c.Features.Binaries {
 		for j, gfile := range c.Features.Binaries[i].GherkinFiles {
@@ -244,6 +308,23 @@ func (c *Config) applyDefaults() {
 		c.Features.SearchPaths = DefaultConfig().Features.SearchPaths
 	}
 
+	if c.MCPServer.Gate.Enabled && c.MCPServer.Gate.KeyFile == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			c.MCPServer.Gate.KeyFile = filepath.Join(home, ".config", "adhd", "gate.key")
+		}
+	}
+	if c.MCPServer.Gate.Period <= 0 {
+		c.MCPServer.Gate.Period = 30 * time.Second
+	}
+
+	// A stdio target's call timeout bounds every forward; without one a child
+	// that never answers would hang the caller's request forever.
+	for i := range c.StdioTargets {
+		if c.StdioTargets[i].Timeout == 0 {
+			c.StdioTargets[i].Timeout = 30 * time.Second
+		}
+	}
+
 	// Default intervals for smoke-alarm endpoints
 	for i := range c.SmokeAlarm {
 		if c.SmokeAlarm[i].Interval == 0 {
@@ -260,6 +341,29 @@ func (c *Config) applyDefaults() {
 			c.MCPTargets[i].Timeout = 5 * time.Second
 		}
 	}
+}
+
+// validate refuses a configuration that cannot be honoured. A stdio target is
+// a process adhd will launch, so an unnamed, duplicated or command-less entry
+// is an error rather than something skipped quietly: silently dropping one
+// leaves the caller with a tool that does not exist and no reason why.
+func (c *Config) validate() error {
+	seen := make(map[string]bool, len(c.StdioTargets))
+	for i, target := range c.StdioTargets {
+		name := strings.TrimSpace(target.Name)
+		switch {
+		case name == "":
+			return fmt.Errorf("stdio_targets[%d]: name is required", i)
+		case !endpointNameRE.MatchString(name):
+			return fmt.Errorf("stdio_targets[%d]: name %q must be a bare token (no scheme, slash or colon)", i, target.Name)
+		case seen[name]:
+			return fmt.Errorf("stdio_targets: duplicate name %q", name)
+		case strings.TrimSpace(target.Command) == "":
+			return fmt.Errorf("stdio_targets[%q]: command is required", name)
+		}
+		seen[name] = true
+	}
+	return nil
 }
 
 // IsNetworkingEnabled returns true if any external integration is configured
