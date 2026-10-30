@@ -27,8 +27,12 @@ may read. A caller that keeps departing is removed from the routeable set.
 ```
 
 One measure, regardless of source — a stale credential, a clock skew, a tampered
-receipt, a honeypot contact. Model: `kb/scripts/lab/PLANE.md`. Figures:
-`kb/scripts/lab/MATH.md`. Full page with references: `kb/scripts/lab/SPLASH.md`.
+receipt, a honeypot contact. Model:
+[`PLANE.md`](https://github.com/james-gibson/lab-safety/blob/main/lab/PLANE.md).
+Figures:
+[`MATH.md`](https://github.com/james-gibson/lab-safety/blob/main/lab/MATH.md).
+Full page with references:
+[`SPLASH.md`](https://github.com/james-gibson/lab-safety/blob/main/lab/SPLASH.md).
 
 ## Quick Start
 
