@@ -17,7 +17,7 @@ import (
 func joinServer(t *testing.T) *Server {
 	t.Helper()
 	s := NewServer(config.MCPServerConfig{Enabled: true, Addr: "127.0.0.1:0"}, lights.NewCluster())
-	s.SetClusterJoinHandler(func(name, alarmA, alarmB string) error { return nil })
+	s.SetClusterJoinHandler(func(ClusterJoin) error { return nil })
 	return s
 }
 
@@ -39,7 +39,7 @@ func upstreamMCP(t *testing.T, identity string) *httptest.Server {
 
 func join(t *testing.T, s *Server, params map[string]interface{}) map[string]interface{} {
 	t.Helper()
-	res, jrpcErr := s.handleClusterJoin(params)
+	res, jrpcErr := s.handleClusterJoin(context.Background(), params)
 	if jrpcErr != nil {
 		t.Fatalf("handleClusterJoin(%v): %+v", params["name"], jrpcErr)
 	}

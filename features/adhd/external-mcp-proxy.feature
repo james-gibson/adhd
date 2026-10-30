@@ -216,3 +216,69 @@ Feature: External MCP Server Proxying (Manual Path)
       ```
     Then the tool is registered with the captured mcp_url and metadata intact
     And subsequent calls through the project tool reach "https://machinewitness.eu/mcp"
+
+  # ──────────────────────────────────────────────────────────────
+  # A self-join is not a second alarm set (adhd#49)
+  # A join names an alarm after the cluster that pushed it. When the pusher is
+  # this dashboard, those names are a second name for endpoints that are already
+  # watched: the same probe, polled twice. Identity — not the address, which a
+  # proxy can supply from anywhere — decides it.
+  #
+  # Identity itself can be shielded. Not every alarm has a direct path into the
+  # proxy: a surface behind the veil answers as an empty instance, and that is
+  # "exists, not disclosed" — a stable route whose rotation holds, without being
+  # told which node serves it. A withheld identity is never read as a denial and
+  # never used to collapse two names.
+  # ──────────────────────────────────────────────────────────────
+
+  Scenario: a self-join keeps the local lights and registers the projects
+    Given adhd is watching two alarms under their local names
+    When the cluster that launched adhd joins with its own alarm_a and alarm_b
+    And the join's adhd_mcp answers adhd.isotope.instance with adhd's own isotope
+    Then the join reports self_join proven by "isotope"
+    And the cluster's project tools are registered
+    And no watcher is started for the alarm endpoints a second time
+    And adhd.lights.list still reports one light per watched target
+
+  Scenario: an unreachable self-join falls back to the listener
+    Given adhd's MCP server binds ":19090" and nothing answers at the advertised address
+    When a cluster joins with adhd_mcp "http://192.0.2.10:19090/mcp"
+    Then the join reports self_join proven by "listener"
+    And no watcher is started for the alarm endpoints a second time
+
+  Scenario: a shielded endpoint is "exists, not disclosed", not a denial
+    Given adhd's MCP server binds the address a shielded surface answers at
+    And that surface answers adhd.isotope.instance as an empty instance
+    When the join is received
+    Then the join reports self_join proven by "listener"
+    And peer_disclosure is "withheld"
+    And nothing behind the veil is named or collapsed
+
+  Scenario: a withheld identity elsewhere is not this instance
+    Given a shielded surface answers as an empty instance
+    And its address is not adhd's listener
+    When the join is received
+    Then the join is not a self-join
+    And peer_disclosure is "withheld"
+    And the endpoint's alarms are watched and keep their names
+
+  Scenario: identity outranks the address
+    Given adhd's MCP server binds the address that answers the join's adhd_mcp
+    And that endpoint answers adhd.isotope.instance with another instance's isotope
+    When the join is received
+    Then the join is not a self-join
+    And the endpoint's alarms are watched
+
+  Scenario: a repeated join does not start a second poller
+    Given cluster "demo-61384" has joined with two alarms
+    When cluster "demo-61384" joins again with the same two alarms
+    Then the same names keep their first pollers
+    And adhd.lights.list reports one light per watched target
+
+  Scenario: a replica under a second name keeps its own light
+    Given adhd is watching "http://127.0.0.1:5100" as "alarm-a"
+    When cluster "kb" joins with alarm_a "http://127.0.0.1:5100"
+    Then "alarm-a" and "kb/alarm-a" are both watched
+    And both lights are reported
+  # An address is shared by design and the alarms are a counter-rotating replica
+  # set; only an attested route identity may collapse them.

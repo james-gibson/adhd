@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -354,4 +356,147 @@ func waitLights(n *node, want int, timeout time.Duration) error {
 		time.Sleep(250 * time.Millisecond)
 	}
 	return fmt.Errorf("lights=%d want>=%d after %v (last error: %v)", last, want, timeout, lastErr)
+}
+
+// TestSelfJoinDoesNotDoubleTheLights is adhd#49 end to end. `lezz demo` pushes
+// its own cluster at its own dashboard, carrying the alarms the config already
+// watches and its own adhd_mcp. The join must be recognised as a self-join —
+// the advertised address is the machine's outbound IP, the bind is loopback —
+// so the light count stays at one per probe, while the join's projects are
+// still registered.
+func TestSelfJoinDoesNotDoubleTheLights(t *testing.T) {
+	alarmA := startAlarm(t)
+	alarmB := startAlarm(t)
+
+	n := newLoopbackNode(t, t.TempDir(), "self-join", false, "")
+	cfg := fmt.Sprintf(`mcp_server:
+  enabled: true
+  addr: %q
+smoke_alarm:
+  - name: alarm-a
+    endpoint: %q
+    interval: 500ms
+  - name: alarm-b
+    endpoint: %q
+    interval: 500ms
+`, n.addr, alarmA.URL, alarmB.URL)
+	if err := os.WriteFile(n.cfg, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	n.start(t)
+	t.Cleanup(n.stop)
+
+	// One target per alarm: two probes, two lights.
+	if err := waitLights(n, 2, 20*time.Second); err != nil {
+		t.Fatalf("baseline: %v\nstderr:\n%s", err, n.stderr.String())
+	}
+
+	type joinResult struct {
+		Accepted           bool   `json:"accepted"`
+		SelfJoin           bool   `json:"self_join"`
+		SelfJoinProof      string `json:"self_join_proof"`
+		PeerDisclosure     string `json:"peer_disclosure"`
+		ProjectsRegistered int    `json:"projects_registered"`
+	}
+	join := func(adhdMCP string) joinResult {
+		t.Helper()
+		raw, err := callMCPWithParams(n.endpoint(), "adhd.cluster.join", map[string]any{
+			"name":     "demo-61384",
+			"alarm_a":  alarmA.URL,
+			"alarm_b":  alarmB.URL,
+			"adhd_mcp": adhdMCP,
+			"projects": []any{
+				map[string]any{
+					"id":      "01JABCDEF",
+					"name":    "tuner",
+					"repo":    "james-gibson/tuner",
+					"mcp_url": "http://127.0.0.1:1/mcp",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("adhd.cluster.join: %v", err)
+		}
+		var res joinResult
+		if err := json.Unmarshal(raw, &res); err != nil {
+			t.Fatalf("decode join result %s: %v", raw, err)
+		}
+		if !res.Accepted {
+			t.Fatalf("join was not accepted: %s", raw)
+		}
+		return res
+	}
+
+	// The address lezz actually advertises: the outbound IP, while adhd binds
+	// loopback. The endpoint cannot be asked who it is, so the listener is the
+	// evidence.
+	port := n.addr[strings.LastIndex(n.addr, ":")+1:]
+	host := lanIPv4()
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	advertised := join("http://" + net.JoinHostPort(host, port) + "/mcp")
+	if !advertised.SelfJoin {
+		t.Errorf("a join naming this instance's own listener was not reported as a self-join")
+	}
+	if advertised.ProjectsRegistered != 1 {
+		t.Errorf("projects_registered = %d, want 1 (only the watchers are skipped)",
+			advertised.ProjectsRegistered)
+	}
+
+	// The same join addressed at a reachable alias of this instance: now the
+	// endpoint answers, and the proof is its own public isotope id, not a port.
+	reachable := join(n.endpoint())
+	if !reachable.SelfJoin || reachable.SelfJoinProof != "isotope" {
+		t.Errorf("a join addressed at this instance's own endpoint was proven by %q, want isotope",
+			reachable.SelfJoinProof)
+	}
+	if reachable.PeerDisclosure != "isotope" {
+		t.Errorf("peer_disclosure = %q, want isotope for a reachable endpoint", reachable.PeerDisclosure)
+	}
+	// The advertised address is not ours to answer on, so nothing is disclosed:
+	// that is "silent", not "no route", and the listener is the evidence used.
+	if advertised.PeerDisclosure != "silent" {
+		t.Errorf("peer_disclosure = %q, want silent for an address nothing answers on", advertised.PeerDisclosure)
+	}
+	t.Logf("self-join proven by %s when reachable, %s when only advertised",
+		reachable.SelfJoinProof, advertised.SelfJoinProof)
+
+	// A joined watcher jitters its first poll by up to its 10s interval, so
+	// give the old behaviour time to surface a second light before asserting.
+	time.Sleep(12 * time.Second)
+
+	names, err := lightNames(n.endpoint())
+	if err != nil {
+		t.Fatalf("adhd.lights.list: %v", err)
+	}
+	want := []string{"smoke:alarm-a/soak-target", "smoke:alarm-b/soak-target"}
+	sort.Strings(want)
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("lights = %v, want %v (a self-join must not double them)", names, want)
+	}
+}
+
+// lightNames returns the sorted smoke lights the dashboard reports.
+func lightNames(endpoint string) ([]string, error) {
+	raw, err := callMCPResult(endpoint, "adhd.lights.list")
+	if err != nil {
+		return nil, err
+	}
+	var envelope struct {
+		Lights []struct {
+			Name string `json:"name"`
+		} `json:"lights"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, l := range envelope.Lights {
+		if strings.HasPrefix(l.Name, "smoke:") {
+			names = append(names, l.Name)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
 }

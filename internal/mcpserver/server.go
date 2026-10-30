@@ -45,9 +45,35 @@ type ReceiptComputer func(featureID, nonce string) string
 // ReceiptVerifier validates a receipt against the instance's own secret.
 type ReceiptVerifier func(receipt, featureID, nonce string) bool
 
+// ClusterJoin is a join pushed by a lezz demo cluster, resolved to the two
+// facts the wiring needs: the alarm endpoints, and whether this instance is the
+// cluster that pushed it.
+type ClusterJoin struct {
+	Name    string
+	AlarmA  string
+	AlarmB  string
+	AdhdMCP string
+	// Self is true when the join came from this instance. Such a join is not a
+	// second set of alarms to watch: the endpoints it carries are the ones local
+	// config already watches, and adopting them under the cluster prefix is the
+	// same probe under a second name (adhd#49).
+	Self bool
+	// SelfProof is how Self was established, most trustworthy first:
+	// SelfJoinByIsotope when the endpoint answered with this instance's own
+	// isotope id, SelfJoinByListener when it disclosed nothing and its address
+	// is this instance's own listener. Empty when Self is false.
+	SelfProof string
+	// Disclosure records what the endpoint said about itself:
+	// DisclosureIsotope (it named an id), DisclosureWithheld (it answered as an
+	// empty instance — shielded or gated, and deliberately indistinguishable),
+	// or DisclosureSilent (not asked, or no answer). A withheld identity is not
+	// a denial: a stable route exists behind the veil, it is just not named.
+	Disclosure string
+}
+
 // ClusterJoinHandler is called when adhd.cluster.join is received, wiring
 // the new cluster's smoke-alarm endpoints into the running watcher.
-type ClusterJoinHandler func(name, alarmA, alarmB string) error
+type ClusterJoinHandler func(join ClusterJoin) error
 
 // SecurityAlertHandler is called when a security event occurs (honeypot trigger,
 // rung challenge failure). level is "warn" or "critical", event is a short tag,
@@ -596,7 +622,7 @@ func (s *Server) handleMCPRPC(w http.ResponseWriter, r *http.Request) {
 		result, respErr = s.handleRungChallenge(r.Context(), params)
 
 	case "adhd.cluster.join":
-		result, respErr = s.handleClusterJoin(params)
+		result, respErr = s.handleClusterJoin(r.Context(), params)
 
 	case "adhd.cluster.leave":
 		result, respErr = s.handleClusterLeave(params)
@@ -1251,7 +1277,7 @@ func (s *Server) handleToolsCall(ctx context.Context, params interface{}, capRun
 	case "adhd.rung.challenge":
 		result, errResult = s.handleRungChallenge(ctx, toolInput)
 	case "adhd.cluster.join":
-		result, errResult = s.handleClusterJoin(toolInput)
+		result, errResult = s.handleClusterJoin(ctx, toolInput)
 	case "adhd.cluster.leave":
 		result, errResult = s.handleClusterLeave(toolInput)
 	case "adhd.hurl.run":
@@ -1631,8 +1657,99 @@ func firstString(m map[string]interface{}, keys ...string) string {
 	return ""
 }
 
+// Self-join proofs, in the order they are trusted.
+const (
+	// SelfJoinByIsotope is identification: the joining endpoint answered
+	// adhd.isotope.instance with this instance's own isotope id. The address it
+	// was reached at does not decide it — a handler can be reached through a
+	// proxy, from anywhere, at an address it does not own. The id is public, so
+	// echoing it is possible; that is not a privilege, because a false self only
+	// stops the caller's own alarms from being watched while its projects, repos
+	// and decoys still register. The probe identifies; it does not authorize.
+	SelfJoinByIsotope = "isotope"
+	// SelfJoinByListener is the fallback: the endpoint disclosed no identity and
+	// its address is this instance's own listener. lezz advertises the outbound
+	// IP while the bind may be a wildcard or loopback, so the URLs never match
+	// literally; the port and the set of local addresses do. The instance is
+	// taken as this one, but nothing behind the veil is named or collapsed.
+	SelfJoinByListener = "listener"
+)
+
+// What the joining endpoint disclosed about itself. The probe's answer is an
+// observation in its own right: a surface behind the proxy veil answers as an
+// empty instance — shielded, gated, or simply unconfigured, deliberately
+// indistinguishable — and that is "exists, not disclosed", not "no route".
+const (
+	// DisclosureIsotope: it answered with a public isotope id.
+	DisclosureIsotope = "isotope"
+	// DisclosureWithheld: it answered, and withheld its identity. There is a
+	// stable surface behind the veil; which node serves it is declared, not seen.
+	DisclosureWithheld = "withheld"
+	// DisclosureSilent: it was not asked, or it did not answer.
+	DisclosureSilent = "silent"
+)
+
+// selfJoinProbeTimeout bounds the identity probe a join waits for. A join is a
+// push, so the caller should not be held for the peer's full HTTP timeout when
+// the advertised address is a stale one.
+const selfJoinProbeTimeout = 1500 * time.Millisecond
+
+// joinIdentity is what a join's endpoint said about itself: the isotope it
+// disclosed (empty when it withheld one) and the disclosure class.
+type joinIdentity struct {
+	Isotope    string
+	Disclosure string
+}
+
+// probeJoinIdentity asks the joining endpoint who it is. It is asked rather than
+// inferred because a handler can be reached through a proxy from anywhere, and
+// an address carries no identity — several claimants may hold one, and a handler
+// may serve at an address it does not own.
+//
+// A withheld answer is not a denial. Not every alarm has a direct path into the
+// proxy: a shielded surface answers as an empty instance on purpose, so the probe
+// can tell that something stable is behind the veil without learning what. That
+// absence of disclosure is reported, and it is never read as "no route".
+func (s *Server) probeJoinIdentity(ctx context.Context, peerMCP string) joinIdentity {
+	if peerMCP == "" || s.instanceIsotope == "" {
+		// Without an identity of our own there is nothing to compare against,
+		// so asking would spend a round trip to learn nothing.
+		return joinIdentity{Disclosure: DisclosureSilent}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, selfJoinProbeTimeout)
+	defer cancel()
+	res, err := s.callPeerMCP(probeCtx, peerMCP, "adhd.isotope.instance", nil)
+	if err != nil {
+		return joinIdentity{Disclosure: DisclosureSilent}
+	}
+	isotope, _ := res["isotope"].(string)
+	if isotope == "" {
+		return joinIdentity{Disclosure: DisclosureWithheld}
+	}
+	return joinIdentity{Isotope: isotope, Disclosure: DisclosureIsotope}
+}
+
+// selfJoinProof decides whether the join came from this instance, and says which
+// evidence it rested on. A disclosed identity outranks the address: an endpoint
+// answering with someone else's isotope is someone else however local its address
+// looks. Only an undisclosed endpoint falls back to the listener, where an
+// address is the last evidence available.
+func (s *Server) selfJoinProof(ctx context.Context, peerMCP string) (proof string, identity joinIdentity) {
+	identity = s.probeJoinIdentity(ctx, peerMCP)
+	if identity.Disclosure == DisclosureIsotope {
+		if identity.Isotope == s.instanceIsotope {
+			return SelfJoinByIsotope, identity
+		}
+		return "", identity
+	}
+	if peerMCP != "" && config.SameListener(s.config.Addr, peerMCP) {
+		return SelfJoinByListener, identity
+	}
+	return "", identity
+}
+
 // handleClusterJoin wires a newly-joined lezz demo cluster into the running watcher.
-func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcError) {
+func (s *Server) handleClusterJoin(ctx context.Context, params interface{}) (interface{}, *jsonrpcError) {
 	p, err := parseStringParams(params, "name")
 	if err != nil {
 		return nil, &jsonrpcError{Code: -32602, Message: err.Error()}
@@ -1641,11 +1758,22 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 	m, _ := params.(map[string]interface{})
 	alarmA := firstString(m, "alarm_a", "alarm-a")
 	alarmB := firstString(m, "alarm_b", "alarm-b")
+	adhdMCP := firstString(m, "adhd_mcp", "adhd.mcp")
 
 	if s.clusterJoinHandler == nil {
 		return map[string]interface{}{"accepted": false, "reason": "not configured"}, nil
 	}
-	if err := s.clusterJoinHandler(p["name"], alarmA, alarmB); err != nil {
+	proof, identity := s.selfJoinProof(ctx, adhdMCP)
+	join := ClusterJoin{
+		Name:       p["name"],
+		AlarmA:     alarmA,
+		AlarmB:     alarmB,
+		AdhdMCP:    adhdMCP,
+		Self:       proof != "",
+		SelfProof:  proof,
+		Disclosure: identity.Disclosure,
+	}
+	if err := s.clusterJoinHandler(join); err != nil {
 		return nil, &jsonrpcError{Code: -32000, Message: "cluster join failed: " + err.Error()}
 	}
 
@@ -1708,7 +1836,6 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 	}
 
 	// Track this cluster peer for path negotiation.
-	adhdMCP := firstString(m, "adhd_mcp", "adhd.mcp")
 	s.mu.Lock()
 	s.clusterPeers[p["name"]] = &clusterPeerInfo{
 		Name:     p["name"],
@@ -1776,6 +1903,9 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 		"name", p["name"],
 		"alarm-a", alarmA,
 		"alarm-b", alarmB,
+		"self_join", join.Self,
+		"self_join_proof", join.SelfProof,
+		"peer_disclosure", join.Disclosure,
 		"repos", repoCount,
 		"projects", projectCount,
 		"honeypots", honeypotCount,
@@ -1793,6 +1923,14 @@ func (s *Server) handleClusterJoin(params interface{}) (interface{}, *jsonrpcErr
 	// nothing sees the decoy is silent on any contact.
 	if len(armed) > 0 {
 		result["honeypots"] = armed
+	}
+	// A self-join is stated back: the caller pushed a join at its own
+	// dashboard, so its projects were registered but its alarms were not
+	// watched a second time (adhd#49).
+	if join.Self {
+		result["self_join"] = true
+		result["self_join_proof"] = join.SelfProof
+		result["peer_disclosure"] = join.Disclosure
 	}
 	// Report repeats and refusals rather than folding them into the counts: a
 	// caller that pushed two providers of one capability must be able to see
