@@ -282,11 +282,22 @@ func waitReady(endpoint string, max time.Duration) error {
 
 // callMCPResult performs a JSON-RPC call and returns the raw result field.
 func callMCPResult(endpoint, method string) (json.RawMessage, error) {
-	body, _ := json.Marshal(map[string]any{
+	return callMCPWithParams(endpoint, method, nil)
+}
+
+// callMCPWithParams performs a JSON-RPC call with params (nil for none) and
+// returns the raw result field. The cluster-join coverage needs it: a join with
+// no payload is not a join.
+func callMCPWithParams(endpoint, method string, params any) (json.RawMessage, error) {
+	call := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  method,
-	})
+	}
+	if params != nil {
+		call["params"] = params
+	}
+	body, _ := json.Marshal(call)
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err

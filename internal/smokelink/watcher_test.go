@@ -336,3 +336,115 @@ done:
 		t.Error("did not receive update from endpoint2")
 	}
 }
+
+// TestWatcherRefusesARepeatedAdoption is the poller guard behind adhd#49: a
+// rejoin or a registry poll that re-adds the same name for the same endpoint
+// must not start a second poller for a light that already has one.
+func TestWatcherRefusesARepeatedAdoption(t *testing.T) {
+	var polls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		polls.Add(1)
+		resp := StatusResponse{
+			Targets: []TargetStatus{
+				{ID: "peer", State: "healthy", CheckedAt: time.Now().Format(time.RFC3339)},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	watcher := NewWatcher([]config.SmokeAlarmEndpoint{
+		{Name: "alarm-a", Endpoint: server.URL, Interval: 100 * time.Millisecond},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+
+	updates := make(chan LightUpdate, 32)
+	watcher.Start(ctx, updates)
+
+	// The same claim, spelled with a trailing slash: one name, one endpoint,
+	// so it is the same poll and must be refused.
+	if watcher.WatchEndpoint(ctx, config.SmokeAlarmEndpoint{
+		Name:     "alarm-a",
+		Endpoint: server.URL + "/",
+		Interval: 100 * time.Millisecond,
+	}, updates) {
+		t.Fatal("a repeated adoption was accepted; it would double the poll")
+	}
+
+	// Drain: the refused adoption must never appear as a second source.
+	for {
+		select {
+		case update := <-updates:
+			if update.SourceName != "alarm-a" {
+				t.Fatalf("a refused adoption emitted a light: %+v", update)
+			}
+		case <-ctx.Done():
+			if polls.Load() == 0 {
+				t.Fatal("the first adoption never polled")
+			}
+			return
+		}
+	}
+}
+
+// TestWatcherKeepsReplicasUnderSeparateNames is the boundary adhd#49 must not
+// cross: alarm-a and alarm-b are a counter-rotating replica set — two nodes of
+// one route, each pointed at the other — and a registry may name one address
+// twice on purpose. Names are the adopter's claims; endpoint equality is not
+// route equality, so both are watched and both stay visible.
+func TestWatcherKeepsReplicasUnderSeparateNames(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		resp := StatusResponse{
+			Targets: []TargetStatus{
+				{ID: "peer", State: "healthy", CheckedAt: time.Now().Format(time.RFC3339)},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	watcher := NewWatcher([]config.SmokeAlarmEndpoint{
+		{Name: "alarm-a", Endpoint: server.URL, Interval: 50 * time.Millisecond},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	updates := make(chan LightUpdate, 64)
+	watcher.Start(ctx, updates)
+
+	if !watcher.WatchEndpoint(ctx, config.SmokeAlarmEndpoint{
+		Name:     "alarm-b",
+		Endpoint: server.URL,
+		Interval: 50 * time.Millisecond,
+	}, updates) {
+		t.Fatal("a second name for one address must still be watched: it is a replica, not a duplicate")
+	}
+
+	seen := make(map[string]bool)
+	for {
+		select {
+		case update := <-updates:
+			if update.TargetID == "peer" {
+				seen[update.SourceName] = true
+			}
+		case <-ctx.Done():
+			if !seen["alarm-a"] || !seen["alarm-b"] {
+				t.Fatalf("sources = %v, want both replica names", seen)
+			}
+			return
+		}
+	}
+}

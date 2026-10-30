@@ -52,6 +52,18 @@ type Watcher struct {
 	client    *http.Client
 	mu        sync.Mutex
 	lastState map[string]lastTargetStatus // keyed by endpoint:targetID; guarded by mu
+	// adopted is light name -> the endpoint that name is polling. It is an
+	// idempotency guard, not an identity: a repeat adoption of the same name at
+	// the same endpoint (a rejoin, a registry poll) must not start a second
+	// poller for a light that already has one (adhd#49). Two different names
+	// watching one address are kept apart on purpose — the alarms are a
+	// counter-rotating replica set, and an address is shared by design, so
+	// collapsing on it would erase a node the observer is meant to see. The name
+	// is also all a shielded alarm can offer: a route behind the proxy veil is
+	// stable across rotations but does not disclose which node serves it, so a
+	// name is the only handle there is, and it is never traded for an address.
+	// Guarded by mu.
+	adopted map[string]string
 }
 
 type lastTargetStatus struct {
@@ -109,6 +121,7 @@ func NewWatcher(endpoints []config.SmokeAlarmEndpoint) *Watcher {
 			Timeout: 10 * time.Second,
 		},
 		lastState: make(map[string]lastTargetStatus),
+		adopted:   make(map[string]string),
 	}
 }
 
@@ -116,14 +129,49 @@ func NewWatcher(endpoints []config.SmokeAlarmEndpoint) *Watcher {
 // Sends LightUpdate messages to the provided channel
 func (w *Watcher) Start(ctx context.Context, updates chan<- LightUpdate) {
 	for _, endpoint := range w.endpoints {
-		go w.watchEndpoint(ctx, endpoint, updates)
+		w.startEndpoint(ctx, endpoint, updates)
 	}
 }
 
 // WatchEndpoint starts watching a dynamically added endpoint.
 // Safe to call after Start — used to add mDNS-discovered instances at runtime.
-func (w *Watcher) WatchEndpoint(ctx context.Context, endpoint config.SmokeAlarmEndpoint, updates chan<- LightUpdate) {
+//
+// It reports false when this name is already polling this same endpoint: the
+// existing poller and its light are kept, so a repeated adoption cannot double
+// the poll. A second name for the same endpoint is a different claim and is
+// watched, because those names are how a replica set stays visible.
+func (w *Watcher) WatchEndpoint(ctx context.Context, endpoint config.SmokeAlarmEndpoint, updates chan<- LightUpdate) bool {
+	return w.startEndpoint(ctx, endpoint, updates)
+}
+
+// startEndpoint records the adoption and starts the poller. The record is keyed
+// by name and compared by request identity: the same name at the same endpoint
+// is one light with one poller.
+func (w *Watcher) startEndpoint(ctx context.Context, endpoint config.SmokeAlarmEndpoint, updates chan<- LightUpdate) bool {
+	key := config.EndpointIdentity(endpoint.Endpoint)
+
+	w.mu.Lock()
+	existing, seen := w.adopted[endpoint.Name]
+	if seen && existing == key {
+		w.mu.Unlock()
+		slog.Info("smoke-alarm endpoint already watched; keeping the existing poller",
+			"name", endpoint.Name,
+			"endpoint", endpoint.Endpoint,
+		)
+		return false
+	}
+	if seen {
+		slog.Info("smoke-alarm name now polls a new endpoint; the old poller keeps its light until it exits",
+			"name", endpoint.Name,
+			"was", existing,
+			"now", key,
+		)
+	}
+	w.adopted[endpoint.Name] = key
+	w.mu.Unlock()
+
 	go w.watchEndpoint(ctx, endpoint, updates)
+	return true
 }
 
 // watchEndpoint monitors a single smoke-alarm instance

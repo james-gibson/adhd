@@ -284,9 +284,10 @@ func TestConfigFromClustersSurfacesProjects(t *testing.T) {
 		},
 	})
 
-	// The alarm endpoints keep the shape they always had.
-	if len(cfg.SmokeAlarm) != 1 || cfg.SmokeAlarm[0].Name != "alarm-a" {
-		t.Fatalf("SmokeAlarm = %+v, want one alarm-a endpoint", cfg.SmokeAlarm)
+	// The alarm endpoints are named for the cluster whether or not it has
+	// neighbours: the name is part of a light's identity (adhd#49).
+	if len(cfg.SmokeAlarm) != 1 || cfg.SmokeAlarm[0].Name != "demo-001/alarm-a" {
+		t.Fatalf("SmokeAlarm = %+v, want one demo-001/alarm-a endpoint", cfg.SmokeAlarm)
 	}
 
 	if len(cfg.DiscoveredClusters) != 1 {
@@ -310,6 +311,50 @@ func TestConfigFromClustersSurfacesProjects(t *testing.T) {
 	// the fallback at registration time, and only then is it non-explicit.
 	if dc.Projects[1].ID != "" {
 		t.Errorf("absent id should stay empty, got %q", dc.Projects[1].ID)
+	}
+}
+
+// TestConfigFromClustersNamesDoNotDependOnPeerCount pins the naming decision
+// that made the same cluster two different things on two machines: the prefix
+// used to be applied only when len(clusters) > 1, so the light names a dashboard
+// showed depended on how many neighbours happened to be advertising (adhd#49).
+func TestConfigFromClustersNamesDoNotDependOnPeerCount(t *testing.T) {
+	alone := ConfigFromClusters([]ClusterInfo{
+		{Name: "demo-61384", AlarmA: "http://192.168.1.10:5100"},
+	})
+	crowded := ConfigFromClusters([]ClusterInfo{
+		{Name: "demo-61384", AlarmA: "http://192.168.1.10:5100"},
+		{Name: "demo-91588", AlarmA: "http://192.168.1.10:5200"},
+		{Name: "kb", AlarmA: "http://192.168.1.11:5100"},
+	})
+
+	if len(alone.SmokeAlarm) != 1 || len(crowded.SmokeAlarm) != 3 {
+		t.Fatalf("endpoints: alone=%+v crowded=%+v", alone.SmokeAlarm, crowded.SmokeAlarm)
+	}
+	if got := alone.SmokeAlarm[0].Name; got != "demo-61384/alarm-a" {
+		t.Errorf("a lone cluster's alarm is named %q, want demo-61384/alarm-a", got)
+	}
+	if alone.SmokeAlarm[0].Name != crowded.SmokeAlarm[0].Name {
+		t.Errorf("the same endpoint changed name with the peer count: %q vs %q",
+			alone.SmokeAlarm[0].Name, crowded.SmokeAlarm[0].Name)
+	}
+}
+
+// TestConfigFromClustersKeepsASharedAddress pins the boundary of the fix: the
+// demo's alarm_a and alarm_b are a counter-rotating replica set and an address
+// is shared by design, so a registry naming one URL twice is two claims, not a
+// duplicated line. Both are configured; the self-join that doubled the lights
+// is refused at the watcher, not here (adhd#49).
+func TestConfigFromClustersKeepsASharedAddress(t *testing.T) {
+	cfg := ConfigFromClusters([]ClusterInfo{
+		{Name: "demo-61384", AlarmA: "http://192.168.1.10:5100", AlarmB: "http://192.168.1.10:5100", AdhdMCP: "http://192.168.1.10:9100/mcp"},
+	})
+
+	if len(cfg.SmokeAlarm) != 2 {
+		t.Fatalf("SmokeAlarm = %+v, want both replica names kept", cfg.SmokeAlarm)
+	}
+	if cfg.SmokeAlarm[0].Name != "demo-61384/alarm-a" || cfg.SmokeAlarm[1].Name != "demo-61384/alarm-b" {
+		t.Errorf("names = %q, %q; want the replica set named", cfg.SmokeAlarm[0].Name, cfg.SmokeAlarm[1].Name)
 	}
 }
 

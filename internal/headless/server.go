@@ -49,7 +49,14 @@ type Server struct {
 	specSeq      uint64
 	ctx          context.Context
 	cancel       context.CancelFunc
+	// joinPollInterval is how often an alarm adopted from a cluster join is
+	// polled. Zero means defaultJoinPollInterval; tests shorten it so a join's
+	// lights appear without waiting a full interval.
+	joinPollInterval time.Duration
 }
+
+// defaultJoinPollInterval is the poll interval for an alarm adopted at runtime.
+const defaultJoinPollInterval = 10 * time.Second
 
 // specCallerScore is the rolling request-conformance score for one caller.
 // It is a fitness signal, not an admission decision: callers are scored, never
@@ -393,20 +400,57 @@ func (s *Server) drainWatcherUpdates(ch <-chan smokelink.LightUpdate) {
 // handleClusterJoin wires a newly-joined lezz demo cluster's smoke-alarm
 // endpoints into the running watcher so their health updates flow into the
 // headless cluster immediately — no wait for the next poll cycle.
-func (s *Server) handleClusterJoin(name, alarmA, alarmB string) error {
-	prefix := name + "/"
-	if alarmA != "" {
-		s.smokeWatcher.WatchEndpoint(s.ctx, config.SmokeAlarmEndpoint{
-			Name:     prefix + "alarm-a",
-			Endpoint: alarmA,
-			Interval: 10 * time.Second,
-		}, s.watchUpdates)
+//
+// A join is not a licence to watch an alarm twice. A self-join adds no watchers
+// at all: the endpoints it pushes are the ones local config already watches, so
+// adopting them under the cluster prefix would be the same probe under a second
+// name. A repeated join under the same name is refused by the watcher, which is
+// what keeps a rejoin from starting a second poller.
+//
+// The replica set is deliberately left alone. alarm-a and alarm-b are two nodes
+// of one route, each pointed at the other for the 42i counter-rotation, and
+// "peer" and "self-health-check" are two routes on each; one light per
+// endpoint/target pair is what makes the replicas visible. Only the same
+// endpoint adopted twice under one name is collapsed. Everything else the join
+// carries — projects, repos, decoys — is registered regardless.
+//
+// An alarm whose identity is behind the proxy veil is watched the same way. The
+// dashboard may know a stable route exists there — its rotation holds — without
+// being told which node serves it, and that is why nothing here is collapsed by
+// address: the light stays named and the route stays declared.
+func (s *Server) handleClusterJoin(join mcpserver.ClusterJoin) error {
+	if join.Self {
+		slog.Info("cluster join came from this instance; keeping the local alarm watchers",
+			"name", join.Name,
+			"adhd_mcp", join.AdhdMCP,
+			"proof", join.SelfProof,
+			"peer_disclosure", join.Disclosure,
+		)
+		return nil
 	}
-	if alarmB != "" {
+	if s.smokeWatcher == nil {
+		return nil
+	}
+
+	prefix := join.Name + "/"
+	for _, claim := range []struct {
+		name     string
+		endpoint string
+	}{
+		{prefix + "alarm-a", join.AlarmA},
+		{prefix + "alarm-b", join.AlarmB},
+	} {
+		if claim.endpoint == "" {
+			continue
+		}
+		interval := s.joinPollInterval
+		if interval <= 0 {
+			interval = defaultJoinPollInterval
+		}
 		s.smokeWatcher.WatchEndpoint(s.ctx, config.SmokeAlarmEndpoint{
-			Name:     prefix + "alarm-b",
-			Endpoint: alarmB,
-			Interval: 10 * time.Second,
+			Name:     claim.name,
+			Endpoint: claim.endpoint,
+			Interval: interval,
 		}, s.watchUpdates)
 	}
 	return nil

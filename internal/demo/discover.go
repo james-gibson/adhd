@@ -283,10 +283,27 @@ func DiscoveredCluster(c ClusterInfo) config.DiscoveredCluster {
 
 // ConfigFromClusters builds a *config.Config whose SmokeAlarm endpoints are
 // populated from the discovered clusters. Each cluster contributes alarm_a and
-// alarm_b; names are prefixed with the cluster name when there are multiple
-// clusters to avoid collisions. The clusters' MCP identity (adhd_mcp and
-// projects) is carried in DiscoveredClusters so the hosted MCP server can
-// register their proxy tools at startup instead of waiting for a push join.
+// alarm_b, named "<cluster>/alarm-a" whether or not other clusters are
+// advertising.
+//
+// The prefix is not conditional on len(clusters): the name is part of a light's
+// identity, and a name that changes because a neighbour happened to be
+// advertising makes the same cluster two different things on two machines. It
+// also matches the registry poll, which has always prefixed, and the name the
+// cluster's own join pushes, so the self-join that produced two names for one
+// endpoint has nothing to disagree with (adhd#49).
+//
+// Alarms are not deduplicated by address. The demo's alarm_a and alarm_b are a
+// counter-rotating replica set — two nodes of one route, each pointed at the
+// other — and an address is shared by design, so a registry that publishes the
+// same URL twice is describing two claims, not one duplicated line. Collapsing
+// them here would erase a node from the dashboard. The duplication that
+// adhd#49 reported is handled where it happens: a self-join is recognised and
+// its watchers are skipped.
+//
+// The clusters' MCP identity (adhd_mcp and projects) is carried in
+// DiscoveredClusters so the hosted MCP server can register their proxy tools at
+// startup instead of waiting for a push join.
 func ConfigFromClusters(clusters []ClusterInfo) *config.Config {
 	cfg := config.DefaultConfig()
 	cfg.DiscoveredClusters = make([]config.DiscoveredCluster, 0, len(clusters))
@@ -294,21 +311,23 @@ func ConfigFromClusters(clusters []ClusterInfo) *config.Config {
 		cfg.DiscoveredClusters = append(cfg.DiscoveredClusters, DiscoveredCluster(c))
 	}
 	for _, c := range clusters {
-		prefix := ""
-		if len(clusters) > 1 {
-			prefix = c.Name + "/"
-		}
-		if c.AlarmA != "" {
+		for _, alarm := range []struct {
+			name     string
+			endpoint string
+		}{
+			{"alarm-a", c.AlarmA},
+			{"alarm-b", c.AlarmB},
+		} {
+			if alarm.endpoint == "" {
+				continue
+			}
+			name := alarm.name
+			if c.Name != "" {
+				name = c.Name + "/" + alarm.name
+			}
 			cfg.SmokeAlarm = append(cfg.SmokeAlarm, config.SmokeAlarmEndpoint{
-				Name:     prefix + "alarm-a",
-				Endpoint: c.AlarmA,
-				Interval: defaultInterval,
-			})
-		}
-		if c.AlarmB != "" {
-			cfg.SmokeAlarm = append(cfg.SmokeAlarm, config.SmokeAlarmEndpoint{
-				Name:     prefix + "alarm-b",
-				Endpoint: c.AlarmB,
+				Name:     name,
+				Endpoint: alarm.endpoint,
 				Interval: defaultInterval,
 			})
 		}

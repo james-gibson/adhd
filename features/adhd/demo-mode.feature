@@ -65,14 +65,31 @@ Feature: ADHD Demo Mode Cluster Discovery
     Given the cluster registry returns a single cluster "demo-001"
     When adhd builds the config via ConfigFromClusters
     Then the config has exactly two smoke_alarm entries
-    And the first entry has name "alarm-a" and endpoint "http://192.168.1.10:9001"
-    And the second entry has name "alarm-b" and endpoint "http://192.168.1.10:9002"
+    And the first entry has name "demo-001/alarm-a" and endpoint "http://192.168.1.10:9001"
+    And the second entry has name "demo-001/alarm-b" and endpoint "http://192.168.1.10:9002"
+
+  Scenario: an alarm's name does not depend on how many clusters are advertising
+    Given the cluster registry returns a single cluster "demo-001"
+    When adhd builds the config via ConfigFromClusters
+    And the same registry then returns "demo-001" alongside two other clusters
+    Then "demo-001"'s alarms keep the names they had when it was alone
+    And the light names a dashboard shows do not change because a neighbour appeared
 
   Scenario: cluster with multiple entries prefixes names with cluster name
     Given the cluster registry returns two clusters "demo-001" and "demo-002"
     When adhd builds the config via ConfigFromClusters
     Then smoke_alarm entry names are prefixed with their cluster name
     And the names follow the pattern "<cluster-name>/alarm-a" and "<cluster-name>/alarm-b"
+
+  Scenario: an alarm address shared by two names is not collapsed
+    Given the cluster registry returns "demo-001" with alarm_a and alarm_b on
+      "http://192.168.1.10:9001"
+    When adhd builds the config via ConfigFromClusters
+    Then the config carries two smoke_alarm entries for that address
+    And they are named "demo-001/alarm-a" and "demo-001/alarm-b"
+  # alarm_a and alarm_b are a counter-rotating replica set: two nodes of one
+  # route, each pointed at the other. An address is shared by design, and
+  # collapsing on it would hide one of the nodes.
   # ── project context propagation ──────────────────────────────────────────────
   # A cluster advertises the projects whose MCP servers it fronts. Those entries
   # have no representation in smoke_alarm, so ConfigFromClusters carries them in

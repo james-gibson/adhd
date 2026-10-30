@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -726,9 +727,9 @@ func TestHandleClusterJoinLeezzWireContract(t *testing.T) {
 	cluster := lights.NewCluster()
 	s := NewServer(config.MCPServerConfig{Enabled: true, Addr: "127.0.0.1:0"}, cluster)
 
-	var joinedName, joinedAlarmA, joinedAlarmB string
-	s.SetClusterJoinHandler(func(name, alarmA, alarmB string) error {
-		joinedName, joinedAlarmA, joinedAlarmB = name, alarmA, alarmB
+	var joined ClusterJoin
+	s.SetClusterJoinHandler(func(join ClusterJoin) error {
+		joined = join
 		return nil
 	})
 
@@ -749,13 +750,16 @@ func TestHandleClusterJoinLeezzWireContract(t *testing.T) {
 		},
 	}
 
-	result, jrpcErr := s.handleClusterJoin(params)
+	result, jrpcErr := s.handleClusterJoin(context.Background(), params)
 	if jrpcErr != nil {
 		t.Fatalf("handleClusterJoin returned error: %+v", jrpcErr)
 	}
 
-	if joinedName != "demo-1234" || joinedAlarmA != "http://10.0.0.5:18080" || joinedAlarmB != "http://10.0.0.6:18081" {
-		t.Errorf("handler got name=%q alarmA=%q alarmB=%q", joinedName, joinedAlarmA, joinedAlarmB)
+	if joined.Name != "demo-1234" || joined.AlarmA != "http://10.0.0.5:18080" || joined.AlarmB != "http://10.0.0.6:18081" {
+		t.Errorf("handler got name=%q alarmA=%q alarmB=%q", joined.Name, joined.AlarmA, joined.AlarmB)
+	}
+	if joined.Self {
+		t.Error("a join from another MCP port must not be reported as a self-join")
 	}
 
 	s.mu.RLock()
@@ -803,9 +807,9 @@ func TestHandleClusterJoinLegacyDottedKeys(t *testing.T) {
 	cluster := lights.NewCluster()
 	s := NewServer(config.MCPServerConfig{Enabled: true, Addr: "127.0.0.1:0"}, cluster)
 
-	var joinedAlarmA, joinedAlarmB string
-	s.SetClusterJoinHandler(func(name, alarmA, alarmB string) error {
-		joinedAlarmA, joinedAlarmB = alarmA, alarmB
+	var joined ClusterJoin
+	s.SetClusterJoinHandler(func(join ClusterJoin) error {
+		joined = join
 		return nil
 	})
 
@@ -816,12 +820,12 @@ func TestHandleClusterJoinLegacyDottedKeys(t *testing.T) {
 		"adhd.mcp": "http://10.0.0.7:19090/mcp",
 	}
 
-	if _, jrpcErr := s.handleClusterJoin(params); jrpcErr != nil {
+	if _, jrpcErr := s.handleClusterJoin(context.Background(), params); jrpcErr != nil {
 		t.Fatalf("handleClusterJoin with dotted keys returned error: %+v", jrpcErr)
 	}
 
-	if joinedAlarmA != "http://10.0.0.7:18080" || joinedAlarmB != "http://10.0.0.8:18081" {
-		t.Errorf("handler got alarmA=%q alarmB=%q", joinedAlarmA, joinedAlarmB)
+	if joined.AlarmA != "http://10.0.0.7:18080" || joined.AlarmB != "http://10.0.0.8:18081" {
+		t.Errorf("handler got alarmA=%q alarmB=%q", joined.AlarmA, joined.AlarmB)
 	}
 
 	s.mu.RLock()
@@ -832,5 +836,256 @@ func TestHandleClusterJoinLegacyDottedKeys(t *testing.T) {
 	}
 	if peer.Endpoint != "http://10.0.0.7:19090/mcp" {
 		t.Errorf("peer endpoint = %q", peer.Endpoint)
+	}
+}
+
+// TestHandleClusterJoinSelfJoinKeepsProjectsAndSkipsWatchers is adhd#49: a
+// cluster that joins its own dashboard pushes the alarm endpoints the instance
+// already watches. With no isotope id configured the endpoint cannot be asked
+// who it is, so the listener comparison is the evidence — proof by address is a
+// hint, and says so — and the join must still register the projects it carries.
+func TestHandleClusterJoinSelfJoinKeepsProjectsAndSkipsWatchers(t *testing.T) {
+	cluster := lights.NewCluster()
+	s := NewServer(config.MCPServerConfig{Enabled: true, Addr: ":19090"}, cluster)
+
+	var joined ClusterJoin
+	s.SetClusterJoinHandler(func(join ClusterJoin) error {
+		joined = join
+		return nil
+	})
+
+	params := map[string]interface{}{
+		"name":     "demo-61384",
+		"alarm_a":  "http://127.0.0.1:5100",
+		"alarm_b":  "http://127.0.0.1:5101",
+		"adhd_mcp": "http://127.0.0.1:19090/mcp",
+		"github_repos": []interface{}{
+			"james-gibson/tuner",
+		},
+		"projects": []interface{}{
+			map[string]interface{}{
+				"id":      "01JABCDEF",
+				"name":    "tuner",
+				"repo":    "james-gibson/tuner",
+				"mcp_url": "http://127.0.0.1:9200/mcp",
+			},
+		},
+	}
+
+	result, jrpcErr := s.handleClusterJoin(context.Background(), params)
+	if jrpcErr != nil {
+		t.Fatalf("handleClusterJoin returned error: %+v", jrpcErr)
+	}
+	if !joined.Self {
+		t.Error("a join naming this instance's own MCP port was not recognised as a self-join")
+	}
+	if joined.SelfProof != SelfJoinByListener {
+		t.Errorf("SelfProof = %q, want %q when the endpoint cannot be asked", joined.SelfProof, SelfJoinByListener)
+	}
+	if joined.Disclosure != DisclosureSilent {
+		t.Errorf("Disclosure = %q, want %q when there is no identity to probe with",
+			joined.Disclosure, DisclosureSilent)
+	}
+	if joined.Name != "demo-61384" || joined.AlarmA != "http://127.0.0.1:5100" {
+		t.Errorf("handler got %+v", joined)
+	}
+
+	s.mu.RLock()
+	projectRegistered := false
+	for _, dt := range s.dynamicTools {
+		if dt.name == "adhd.project.01JABCDEF.call" {
+			projectRegistered = true
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if !projectRegistered {
+		t.Error("the self-join's project proxy tool was not registered")
+	}
+
+	s.mu.RLock()
+	repoRegistered := false
+	for _, dt := range s.dynamicTools {
+		if dt.name == "adhd.dependabot.james-gibson.tuner" {
+			repoRegistered = true
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if !repoRegistered {
+		t.Error("the self-join's repo tool was not registered")
+	}
+
+	resMap, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("result not a map: %T", result)
+	}
+	if got, _ := resMap["self_join"].(bool); !got {
+		t.Error("self_join was not stated back to the caller")
+	}
+	if got, ok := resMap["projects_registered"].(int); !ok || got != 1 {
+		t.Errorf("projects_registered = %v, want 1 (only the watchers are skipped)", resMap["projects_registered"])
+	}
+}
+
+// TestSelfJoinIsProvenByItsIsotopeNotItsAddress is the identity half of the
+// self-join check: a handler can be reached through a proxy at an address it
+// does not own, so the address proves nothing. The endpoint is asked for its
+// public isotope id, and only this instance can answer with this instance's.
+func TestSelfJoinIsProvenByItsIsotopeNotItsAddress(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  map[string]interface{}{"isotope": "adhd-0123456789ab"},
+		})
+	}))
+	defer peer.Close()
+
+	// The bind is deliberately unrelated: the proof is the answer, not the port.
+	s := NewServer(config.MCPServerConfig{Enabled: true, Addr: ":19090"}, lights.NewCluster())
+	s.SetInstanceIdentity("adhd-0123456789ab", nil, nil)
+
+	var joined ClusterJoin
+	s.SetClusterJoinHandler(func(join ClusterJoin) error {
+		joined = join
+		return nil
+	})
+
+	params := map[string]interface{}{
+		"name":     "demo-61384",
+		"alarm_a":  "http://127.0.0.1:5100",
+		"adhd_mcp": peer.URL + "/mcp",
+	}
+	if _, jrpcErr := s.handleClusterJoin(context.Background(), params); jrpcErr != nil {
+		t.Fatalf("handleClusterJoin returned error: %+v", jrpcErr)
+	}
+	if !joined.Self || joined.SelfProof != SelfJoinByIsotope {
+		t.Fatalf("joined = %+v, want a self-join proven by isotope at %s", joined, peer.URL)
+	}
+	if joined.Disclosure != DisclosureIsotope {
+		t.Errorf("Disclosure = %q, want %q", joined.Disclosure, DisclosureIsotope)
+	}
+}
+
+// TestAnotherIsotopeAtThisAddressIsNotASelfJoin keeps the proof honest: an
+// endpoint that answers with someone else's isotope is someone else, however
+// local its address looks. The address must not override the handler's word.
+func TestAnotherIsotopeAtThisAddressIsNotASelfJoin(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  map[string]interface{}{"isotope": "adhd-ffffffffffff"},
+		})
+	}))
+	defer peer.Close()
+
+	bind := strings.TrimPrefix(peer.URL, "http://")
+	s := NewServer(config.MCPServerConfig{Enabled: true, Addr: bind}, lights.NewCluster())
+	s.SetInstanceIdentity("adhd-0123456789ab", nil, nil)
+
+	var joined ClusterJoin
+	s.SetClusterJoinHandler(func(join ClusterJoin) error {
+		joined = join
+		return nil
+	})
+
+	params := map[string]interface{}{
+		"name":     "stranger",
+		"alarm_a":  "http://127.0.0.1:5100",
+		"adhd_mcp": peer.URL + "/mcp",
+	}
+	if _, jrpcErr := s.handleClusterJoin(context.Background(), params); jrpcErr != nil {
+		t.Fatalf("handleClusterJoin returned error: %+v", jrpcErr)
+	}
+	if joined.Self {
+		t.Fatalf("joined = %+v, want not a self-join: another isotope answered at the bind address", joined)
+	}
+}
+
+// TestWithheldIdentityAtThisListenerIsASelfJoin covers the veil: a shielded or
+// gated surface answers adhd.isotope.instance as an empty instance, on purpose
+// indistinguishable from one with no identity. That is "exists, not disclosed",
+// not a denial — so the listener is still evidence that the pusher is this
+// instance, while the disclosure is recorded as withheld rather than read as
+// "no route".
+func TestWithheldIdentityAtThisListenerIsASelfJoin(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The gate facade: an unentitled caller sees an empty instance.
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  map[string]interface{}{"instance": ""},
+		})
+	}))
+	defer peer.Close()
+
+	bind := strings.TrimPrefix(peer.URL, "http://")
+	s := NewServer(config.MCPServerConfig{Enabled: true, Addr: bind}, lights.NewCluster())
+	s.SetInstanceIdentity("adhd-0123456789ab", nil, nil)
+
+	var joined ClusterJoin
+	s.SetClusterJoinHandler(func(join ClusterJoin) error {
+		joined = join
+		return nil
+	})
+
+	params := map[string]interface{}{
+		"name":     "demo-61384",
+		"alarm_a":  "http://127.0.0.1:5100",
+		"adhd_mcp": peer.URL + "/mcp",
+	}
+	if _, jrpcErr := s.handleClusterJoin(context.Background(), params); jrpcErr != nil {
+		t.Fatalf("handleClusterJoin returned error: %+v", jrpcErr)
+	}
+	if !joined.Self || joined.SelfProof != SelfJoinByListener {
+		t.Fatalf("joined = %+v, want a self-join resting on the listener", joined)
+	}
+	if joined.Disclosure != DisclosureWithheld {
+		t.Errorf("Disclosure = %q, want %q: the surface exists behind the veil",
+			joined.Disclosure, DisclosureWithheld)
+	}
+}
+
+// TestWithheldIdentityElsewhereIsNotASelfJoin keeps the veil from becoming a
+// collapse: a withheld identity at an address that is not this listener is not
+// this instance, so its alarms are watched and stay named.
+func TestWithheldIdentityElsewhereIsNotASelfJoin(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  map[string]interface{}{"instance": ""},
+		})
+	}))
+	defer peer.Close()
+
+	s := NewServer(config.MCPServerConfig{Enabled: true, Addr: ":19090"}, lights.NewCluster())
+	s.SetInstanceIdentity("adhd-0123456789ab", nil, nil)
+
+	var joined ClusterJoin
+	s.SetClusterJoinHandler(func(join ClusterJoin) error {
+		joined = join
+		return nil
+	})
+
+	params := map[string]interface{}{
+		"name":     "shielded-cluster",
+		"alarm_a":  "http://127.0.0.1:5100",
+		"adhd_mcp": peer.URL + "/mcp",
+	}
+	if _, jrpcErr := s.handleClusterJoin(context.Background(), params); jrpcErr != nil {
+		t.Fatalf("handleClusterJoin returned error: %+v", jrpcErr)
+	}
+	if joined.Self {
+		t.Fatalf("joined = %+v, want not a self-join: a withheld identity is not ours", joined)
+	}
+	if joined.Disclosure != DisclosureWithheld {
+		t.Errorf("Disclosure = %q, want %q", joined.Disclosure, DisclosureWithheld)
 	}
 }

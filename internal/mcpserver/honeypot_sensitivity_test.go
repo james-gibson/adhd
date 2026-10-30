@@ -27,7 +27,7 @@ func joinWithSensitivity(t *testing.T, node *chainNode, sensitivity interface{})
 	t.Helper()
 	// A join is only answered when the instance is wired to a watcher; the
 	// decoy registration itself does not need one.
-	node.srv.SetClusterJoinHandler(func(name, alarmA, alarmB string) error { return nil })
+	node.srv.SetClusterJoinHandler(func(ClusterJoin) error { return nil })
 	decoy := map[string]interface{}{
 		"name":        sensitivityDecoy,
 		"description": "internal project proxy (do not call)",
