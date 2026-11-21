@@ -19,6 +19,14 @@ import (
 // point: a session's surface binds an ephemeral port and publishes itself by
 // name, so its address is not knowable in advance and a cache would hold a port
 // the surface no longer answers on.
+//
+// An ACP agent over stdio is not reachable this way, and adhd grows no probe for
+// it on purpose (adhd#63). Its pipes belong to the editor that spawned it, so a
+// probe could only spawn a second agent and report on that one — a process
+// nobody is driving. An agent that wants to be watched serves the session's
+// surface in its own process and registers a name of its own
+// (lab-safety#37, workspace-agent-42); this prober then watches the process, and
+// the surface dies with it.
 type Prober struct {
 	binary      *config.Binary
 	name        string // registry name; "" when Endpoint is a URL
